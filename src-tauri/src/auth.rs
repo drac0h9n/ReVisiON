@@ -1,13 +1,15 @@
+// src-tauri/src/auth.rs
 use axum::{
     extract::{Query, State as AxumState},
     response::Html,
     routing::get,
     Router,
+    http,
 };
 use once_cell::sync::Lazy; // Or load from config/env
 use rand::distr::Alphanumeric;
 use rand::{thread_rng, Rng};
-use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT, CONTENT_TYPE}; // CONTENT_TYPE added
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -27,17 +29,19 @@ static GITHUB_CLIENT_SECRET: Lazy<String> =
 const REDIRECT_URI: &str = "http://127.0.0.1:54321/callback"; // 固定端口，需与 GitHub App 设置一致
 const CSRF_STATE_EXPIRY_SECS: u64 = 300; // State 有效期 (例如 5 分钟)
 
+// --- NEW: Backend Worker Configuration ---
+static WORKER_API_URL: Lazy<String> =
+    Lazy::new(|| std::env::var("WORKER_API_URL").expect("WORKER_API_URL must be set (e.g., https://your-worker.your-domain.workers.dev/sync-user)"));
+static WORKER_API_KEY: Lazy<String> =
+    Lazy::new(|| std::env::var("WORKER_API_KEY").expect("WORKER_API_KEY must be set for backend authentication"));
+
 // --- State Management ---
 
-// 用于存储临时的 CSRF state 和对应的 oneshot sender (用于将 code 发回给等待的任务)
-// Key: csrf_state, Value: Sender to notify the waiting task with the received code or an error
 pub type PendingAuthState = Arc<Mutex<HashMap<String, oneshot::Sender<Result<String, AuthError>>>>>;
 
-// 用于管理本地服务器的关闭
 pub struct ServerHandle {
    pub shutdown_tx: Option<oneshot::Sender<()>>,
 }
-// 使用 Tokio Mutex 包装 ServerHandle 以便在异步上下文中使用
 pub type AuthServerState = Arc<TokioMutex<ServerHandle>>;
 
 // --- Data Structures ---
@@ -55,7 +59,7 @@ struct GithubTokenResponse {
     token_type: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)] // Clone needed for emitting
+#[derive(Serialize, Deserialize, Debug, Clone)] // Clone needed for emitting and backend sync
 pub struct GithubUserProfile {
     login: String,
     id: u64,
@@ -63,6 +67,24 @@ pub struct GithubUserProfile {
     avatar_url: String,
     email: Option<String>, // May be null depending on scope and user settings
 }
+
+// --- NEW: Backend Interaction Data Structures ---
+
+#[derive(Serialize, Debug)]
+struct BackendSyncPayload<'a> {
+    profile: &'a GithubUserProfile,
+    // 可以考虑是否也发送 token，取决于后端是否需要
+    // access_token: Option<&'a str>,
+}
+
+#[derive(Deserialize, Debug)]
+struct BackendSyncResponse {
+    success: bool,
+    message: Option<String>,
+}
+
+
+// --- Error Handling ---
 
 #[derive(Serialize, Debug, Clone, Error)] // Clone needed for emitting
 pub enum AuthError {
@@ -82,6 +104,8 @@ pub enum AuthError {
     InternalError(String),
     #[error("Authentication cancelled by user or system")]
     Cancelled,
+    #[error("Failed to sync user data to backend: {0}")] // NEW Error Variant
+    BackendSyncFailed(String),
 }
 
 // Helper to convert reqwest::Error
@@ -111,72 +135,75 @@ pub async fn login_with_github<R: Runtime>(
     // 2. Prepare for callback channel
     let (code_tx, code_rx) = oneshot::channel::<Result<String, AuthError>>();
 
-// --- Start Server Task ---
-// Clone necessary state for the server task
-let server_pending_state_clone = Arc::clone(&pending_auth_state);
-let server_auth_server_state_clone = Arc::clone(&auth_server_state);
-let server_app_handle = app.clone();
+    // --- Start Server Task ---
+    let server_pending_state_clone = Arc::clone(&pending_auth_state);
+    let server_auth_server_state_clone = Arc::clone(&auth_server_state);
+    let server_app_handle = app.clone(); // Clone app handle early for potential error emission
 
-// Declare variables needed outside the lock scope
-let internal_shutdown_tx: oneshot::Sender<()>; // Declare sender outside
-let server_task_handle; // Declare task handle outside
+    let internal_shutdown_tx: oneshot::Sender<()>;
+    let mut server_task_handle_option: Option<tokio::task::JoinHandle<()>> = None; // Store JoinHandle if server starts
 
-// === Start a new scope for the lock ===
-{
-    let mut server_handle_guard = server_auth_server_state_clone.lock().await; // Lock acquired L122 (Conceptually)
-    if server_handle_guard.shutdown_tx.is_some() {
-        println!("Auth server seems to be already running.");
-        return Err("Authentication process already in progress.".to_string());
-    }
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], 54321));
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            let err_msg = format!("Failed to bind to {}: {}", addr, e);
-            eprintln!("{}", err_msg);
-            app.emit("github_auth_error", Some(AuthError::ServerStartError(err_msg.clone())))
-                .expect("Failed to emit server start error event");
-            return Err(err_msg);
+    { // Lock Scope for Server Start
+        let mut server_handle_guard = server_auth_server_state_clone.lock().await;
+        if server_handle_guard.shutdown_tx.is_some() {
+            println!("Auth server seems to be already running.");
+            // Consider if returning an error is always right, maybe join existing flow?
+            // For simplicity, we prevent concurrent flows initiated by this command.
+            return Err("Authentication process already in progress.".to_string());
         }
-    };
 
-    // Create the shutdown channel *inside* the lock scope if needed to store tx
-    let (tx, internal_shutdown_rx) = oneshot::channel::<()>();
-    internal_shutdown_tx = tx; // Assign to the outer variable
+        let addr = match REDIRECT_URI.parse::<http::Uri>() {
+            Ok(uri) => match uri.authority() {
+                 Some(auth) => SocketAddr::from(([127, 0, 0, 1], auth.port_u16().unwrap_or(54321))), // Default or parsed port
+                 None => SocketAddr::from(([127, 0, 0, 1], 54321)), // Default if no authority
+             },
+             Err(_) => SocketAddr::from(([127, 0, 0, 1], 54321)), // Default on parse error
+         };
 
-    let app_router = Router::new()
-        .route("/callback", get(github_callback_handler))
-        .with_state(server_pending_state_clone.clone()); // Clone for router state
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                let err_msg = format!("Failed to bind to {}: {}", addr, e);
+                eprintln!("{}", err_msg);
+                // Use the early cloned app handle
+                let _ = server_app_handle.emit("github_auth_error", Some(AuthError::ServerStartError(err_msg.clone())));
+                return Err(err_msg);
+            }
+        };
 
-    let server_config = axum::serve(listener, app_router.into_make_service())
-        .with_graceful_shutdown(async {
-            internal_shutdown_rx.await.ok();
-            println!("Auth callback server shutting down gracefully.");
+        let (tx, internal_shutdown_rx) = oneshot::channel::<()>();
+        internal_shutdown_tx = tx; // Assign to outer variable
+
+        let app_router = Router::new()
+            .route("/callback", get(github_callback_handler))
+            .with_state(server_pending_state_clone.clone()); // Clone for router state
+
+        let server_config = axum::serve(listener, app_router.into_make_service())
+            .with_graceful_shutdown(async {
+                internal_shutdown_rx.await.ok();
+                println!("Auth callback server shutting down gracefully.");
+            });
+
+        println!("Auth callback server listening on {}", addr);
+
+        let task_server_state_clone = Arc::clone(&server_auth_server_state_clone);
+        let server_task_handle = tokio::spawn(async move { // Task to run the server
+            if let Err(e) = server_config.await {
+                eprintln!("Auth server error: {}", e);
+                // Potentially emit an event here too if the server crashes unexpectedly
+            } else {
+                println!("Auth server finished gracefully.");
+            }
+            let mut guard = task_server_state_clone.lock().await;
+            guard.shutdown_tx = None; // Clear the handle once stopped
+            println!("Server handle cleared after server task completion.");
         });
 
-    println!("Auth callback server listening on {}", addr);
+        // Store the shutdown sender and the task handle
+        server_handle_guard.shutdown_tx = Some(internal_shutdown_tx);
+        server_task_handle_option = Some(server_task_handle); // Store the handle
 
-    // Clone the state *again* specifically for the spawned task before moving it
-    let task_server_state_clone = Arc::clone(&server_auth_server_state_clone);
-
-    server_task_handle = tokio::spawn(async move { // Now moves task_server_state_clone
-        if let Err(e) = server_config.await {
-            eprintln!("Auth server error: {}", e);
-        } else {
-            println!("Auth server finished gracefully.");
-        }
-        // Use the moved clone inside the task
-        let mut guard = task_server_state_clone.lock().await;
-        guard.shutdown_tx = None;
-        println!("Server handle cleared after server task completion.");
-    });
-
-    // Store the shutdown sender in the state using the guard
-    server_handle_guard.shutdown_tx = Some(internal_shutdown_tx);
-    // === Lock (`server_handle_guard`) goes out of scope and is dropped here === L172 (Conceptually)
-} // <--- End of the lock scope
-
+    } // Lock (`server_handle_guard`) released here
 
     // 3. Store state and sender *before* returning URL
     {
@@ -190,18 +217,19 @@ let server_task_handle; // Declare task handle outside
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope={}&state={}",
         *GITHUB_CLIENT_ID,
         urlencoding::encode(REDIRECT_URI),
-        urlencoding::encode("read:user user:email"),
-        state.clone() // Clone state for the URL
+        urlencoding::encode("read:user user:email"), // Ensure scope covers profile details
+        state.clone()
     );
 
     // --- Spawn the Task to Wait for Callback and Handle Flow ---
-    // Clone remaining needed variables for the spawned task
     let task_pending_auth_state = Arc::clone(&pending_auth_state);
     let task_auth_server_state = Arc::clone(&auth_server_state);
-    let task_state = state.clone(); // Clone state again for the task
+    let task_state = state.clone();
+    let task_app_handle = app.clone(); // Use the main app handle passed into the command
 
-    tokio::spawn(async move {
+    tokio::spawn(async move { // This is the "Authentication Processing Task"
         println!("Spawned task waiting for callback or timeout for state: {}", task_state);
+
         // --- Wait for callback or timeout ---
         let code_result = match tokio::time::timeout(
             std::time::Duration::from_secs(CSRF_STATE_EXPIRY_SECS),
@@ -209,98 +237,134 @@ let server_task_handle; // Declare task handle outside
         )
         .await
         {
-            Ok(Ok(code_res)) => code_res,
+            Ok(Ok(code_res)) => {
+                println!("Callback received for state {}", task_state);
+                code_res // Should be Result<String, AuthError> from the callback handler
+            },
             Ok(Err(_rx_err)) => {
-                 Err(AuthError::InternalError("Callback sender dropped unexpectedly.".into()))
+                // Sender was dropped - this happens if the callback sends an error or if something panics
+                eprintln!("Callback sender dropped unexpectedly for state {}", task_state);
+                Err(AuthError::InternalError("Callback sender dropped unexpectedly.".into()))
             }
             Err(_timeout_err) => {
-                if task_pending_auth_state.lock().unwrap().remove(&task_state).is_some() {
+                 if task_pending_auth_state.lock().unwrap().remove(&task_state).is_some() {
                      println!("Auth timed out, removing state: {}", task_state);
-                } else {
-                     println!("Auth timed out, state already removed or invalid: {}", task_state);
-                }
+                 } else {
+                     println!("Auth timed out, state {} already removed or invalid.", task_state);
+                 }
                 Err(AuthError::CallbackTimeout)
             }
         };
 
         // --- Process Callback Result (inside the spawned task) ---
-        let final_result = match code_result {
-            Ok(code) => {
-                println!("Received code for state {}, exchanging for token...", task_state);
-                match exchange_code_for_token(&code).await {
-                    Ok(token_info) => {
-                        println!("Successfully obtained access token for state {}.", task_state);
-                        match fetch_github_user_profile(&token_info.access_token).await {
-                            Ok(profile) => {
-                                println!("Successfully fetched profile for {}: {:?}", task_state, profile.login);
-                                server_app_handle.emit( // Use cloned app handle
-                                    "github_auth_success",
-                                    Some(serde_json::json!({
-                                        "token": token_info.access_token,
-                                        "profile": profile,
-                                    })),
-                                ).expect("Failed to emit success event");
-                                Ok(()) // Indicate success within the task
-                            }
-                            Err(err) => {
-                                eprintln!("Error fetching profile for state {}: {:?}", task_state, err);
-                                Err(err) // Propagate profile fetch error
-                            }
-                        }
-                    }
-                    Err(err) => {
-                         eprintln!("Error exchanging code for state {}: {:?}", task_state, err);
-                         Err(err) // Propagate token exchange error
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("Authentication failed for state {}: {:?}", task_state, err);
-                // Ensure state is removed if error is not timeout (timeout already handled removal)
-                if !matches!(err, AuthError::CallbackTimeout) {
-                     task_pending_auth_state.lock().unwrap().remove(&task_state);
-                }
-                Err(err) // Propagate the initial error (timeout, internal, etc.)
-            }
-        };
+        // Chain the asynchronous operations using async blocks and match/Result combinators
+        let final_result: Result<(), AuthError> = async {
+            // Step A: Get Code (already done above, stored in code_result)
+            let code = code_result?; // Propagate error if code_result is Err
 
-         // --- Emit error event if any step failed ---
+            // Step B: Exchange Code for Token
+            println!("Exchanging code for token for state {}...", task_state);
+            let token_info = exchange_code_for_token(&code).await?;
+            println!("Successfully obtained access token for state {}.", task_state);
+
+            // Step C: Fetch GitHub User Profile
+            println!("Fetching GitHub profile for state {}...", task_state);
+            let profile = fetch_github_user_profile(&token_info.access_token).await?;
+            println!("Successfully fetched profile for {}: {:?}", task_state, profile.login);
+
+            // --> ADD THIS LINE <--
+            println!("DEBUG: Full fetched profile data: {:?}", profile);
+            // --> END ADDED LINE <--
+            
+            // --- NEW: Step D: Sync User Profile to Backend ---
+            println!("Syncing profile to backend for state {}...", task_state);
+            match sync_user_profile_to_backend(&profile).await {
+                Ok(sync_response) => {
+                    if sync_response.success {
+                         println!("Successfully synced profile for state {} to backend.", task_state);
+                    } else {
+                         let err_msg = format!("Backend reported sync failure for state {}: {}", task_state, sync_response.message.unwrap_or_default());
+                         eprintln!("{}", err_msg);
+                         // Decide: Fail the whole login or just log? We choose to fail here.
+                         return Err(AuthError::BackendSyncFailed(err_msg));
+                    }
+                }
+                Err(sync_err) => {
+                     eprintln!("Error syncing profile to backend for state {}: {:?}", task_state, sync_err);
+                     // Propagate the sync error (likely BackendSyncFailed or ReqwestError)
+                     return Err(sync_err);
+                 }
+             }
+
+            // --- Step E: Emit Success Event ---
+            println!("Authentication and sync successful for state {}. Emitting event.", task_state);
+            task_app_handle.emit( // Use cloned app handle
+                "github_auth_success",
+                Some(serde_json::json!({
+                    // Decide what frontend needs. Maybe just profile now?
+                    // "token": token_info.access_token,
+                    "profile": profile, // Profile is needed by frontend and was synced
+                })),
+            ).expect("Failed to emit success event");
+
+            Ok(()) // Indicate overall success of the async block
+
+        }.await; // Execute the async block
+
+
+         // --- Handle Final Result (Error Emission) ---
         if let Err(final_err) = final_result {
+            eprintln!("Authentication flow failed for state {}: {:?}", task_state, final_err);
+             // Ensure state is removed if the error wasn't a timeout or invalid state from callback
+            match final_err {
+                AuthError::CallbackTimeout | AuthError::InvalidState => (), // Already handled or doesn't exist in map
+                _ => {
+                    // Remove state in case of other errors (e.g., GitHub API error, Backend Sync error)
+                    task_pending_auth_state.lock().unwrap().remove(&task_state);
+                }
+            }
+            // Emit the specific error encountered
             let err_clone = final_err.clone(); // Clone error for emitting
-            server_app_handle.emit("github_auth_error", Some(err_clone))
+            task_app_handle.emit("github_auth_error", Some(err_clone))
                .expect("Failed to emit error event");
         }
 
 
-        // --- Shutdown Server (inside the spawned task, after processing) ---
+        // --- Shutdown Server (always attempt, inside the spawned task, after processing) ---
          println!("Requesting server shutdown for state {} flow...", task_state);
-        {
+        { // Lock scope for server shutdown
             let mut guard = task_auth_server_state.lock().await;
-            if let Some(tx) = guard.shutdown_tx.take() {
+            if let Some(tx) = guard.shutdown_tx.take() { // Take the sender to signal shutdown
                 println!("Sending shutdown signal to auth server...");
-                let _ = tx.send(()); // Send shutdown signal via the *internal* sender
-                // We might not need to explicitly await the server_task_handle here,
-                // as graceful shutdown handles it. But waiting can be useful for debugging.
-                // Drop the guard to release the lock before potentially long await
+                let _ = tx.send(()); // Send the signal
+
+                // Drop the lock *before* waiting on the join handle
                 drop(guard);
-                 match tokio::time::timeout(std::time::Duration::from_secs(5), server_task_handle).await {
-                     Ok(Ok(_)) => println!("Server task joined successfully after state {} flow.", task_state),
-                     Ok(Err(e)) => eprintln!("Server task panicked or finished with error after state {} flow: {}", task_state, e),
-                     Err(_) => eprintln!("Timed out waiting for server task to finish after state {} flow.", task_state),
+
+                // Now wait for the server task handle if it was stored
+                if let Some(server_task_handle) = server_task_handle_option {
+                    match tokio::time::timeout(std::time::Duration::from_secs(5), server_task_handle).await {
+                         Ok(Ok(_)) => println!("Server task joined successfully after state {} flow.", task_state),
+                         Ok(Err(e)) => eprintln!("Server task panicked or finished with error after state {} flow: {}", task_state, e),
+                         Err(_) => eprintln!("Timed out waiting for server task to finish after state {} flow.", task_state),
+                    }
+                 } else {
+                    println!("Server task handle was not available for joining after state {} flow.", task_state);
                  }
 
             } else {
                 println!("Server already shut down or handle missing when state {} flow finished.", task_state);
             }
-        }
+        } // Lock released here
          println!("Finished spawned task for state {}.", task_state);
 
-    }); // End of tokio::spawn
+    }); // End of tokio::spawn for the "Authentication Processing Task"
 
     // 5. Return the URL immediately to the frontend
     println!("Returning auth URL to frontend. Background task will handle the rest.");
     Ok(auth_url)
 }
+
 // --- Axum Callback Handler ---
 
 async fn github_callback_handler(
@@ -316,16 +380,13 @@ async fn github_callback_handler(
         Some(tx) => {
             println!("State matched. Sending code back to waiting task.");
             // Send the code back to the waiting login_with_github task
-            let send_result = tx.send(Ok(params.code));
+            let send_result = tx.send(Ok(params.code)); // Send Ok(code)
             if send_result.is_err() {
-                // This means the receiver (in login_with_github) was dropped,
-                // likely due to timeout or cancellation before the callback arrived.
-                eprintln!("Callback receiver was already dropped. State: {}", params.state);
+                eprintln!("Callback receiver was already dropped (likely timed out). State: {}", params.state);
                 return Html(
                     "<html><body><h1>Authentication Error</h1><p>The application is no longer waiting for this login attempt. It might have timed out. Please try logging in again.</p></body></html>".to_string(),
                 );
             }
-            // Return a simple success page to the user
             Html(
                 "<html><body><h1>Authentication Successful</h1><p>You can close this window now.</p><script>window.close();</script></body></html>".to_string(),
             )
@@ -333,18 +394,16 @@ async fn github_callback_handler(
         None => {
             // State not found or already used/expired
             eprintln!("Invalid or expired state received: {}", params.state);
-            // Do NOT send anything via tx here, as we don't have one.
-            // The original task might time out or handle the error differently.
-            // Return an error page to the user.
+            // We cannot send Err back via tx here because we don't have tx.
+            // The waiting task will time out.
+            // Alternatively, we could try storing an error marker in a different state map
+            // but timeout handling is simpler.
+             // Explicitly send an error *if* we could find the tx, but here we can't.
+            // If we had the sender, we might do:
+            // let _ = tx.send(Err(AuthError::InvalidState));
             Html(
                 "<html><body><h1>Authentication Failed</h1><p>Invalid session state. Please try logging in again from the application.</p></body></html>".to_string(),
             )
-            // Note: We didn't call tx.send(Err(AuthError::InvalidState)) here
-            // because we don't *have* tx. The waiting task in login_with_github
-            // will eventually time out or potentially receive an error if we modified
-            // the state map differently. The current logic relies on timeout for invalid state.
-            // A more robust implementation might have the callback handler directly
-            // emit an error event to the frontend in this case.
         }
     }
 }
@@ -357,34 +416,32 @@ async fn exchange_code_for_token(code: &str) -> Result<GithubTokenResponse, Auth
         ("client_id", GITHUB_CLIENT_ID.as_str()),
         ("client_secret", GITHUB_CLIENT_SECRET.as_str()),
         ("code", code),
-        ("redirect_uri", REDIRECT_URI), // Optional but recommended by GitHub
+        ("redirect_uri", REDIRECT_URI),
     ];
 
     let response = client
         .post("https://github.com/login/oauth/access_token")
-        .header(ACCEPT, "application/json") // Request JSON response
+        .header(ACCEPT, "application/json")
         .header(USER_AGENT, "Tauri GitHub Auth Example") // Good practice
         .form(&params)
         .send()
-        .await?;
+        .await?; // Converts reqwest::Error to AuthError::ReqwestError
 
     if response.status().is_success() {
-        let token_response = response.json::<GithubTokenResponse>().await?;
-        // Check if GitHub returned an error object within the JSON instead of a token
-        // (Though usually it sends non-200 status for errors here)
+        let token_response = response.json::<GithubTokenResponse>().await
+            .map_err(|e| AuthError::ParseError(format!("Failed to parse token response: {}", e)))?;
         if token_response.access_token.is_empty() {
-             Err(AuthError::GitHubError(
-                "Received empty access token".to_string(),
-            ))
+             Err(AuthError::GitHubError("Received empty access token".to_string()))
         } else {
             Ok(token_response)
         }
     } else {
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        eprintln!("GitHub token exchange error: {}", error_text);
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error reading response body".to_string());
+        eprintln!("GitHub token exchange error ({}): {}", status, error_text);
         Err(AuthError::GitHubError(format!(
-            "Failed to exchange code: {}",
-            error_text
+            "Failed to exchange code (status {}): {}",
+            status, error_text
         )))
     }
 }
@@ -396,18 +453,55 @@ async fn fetch_github_user_profile(access_token: &str) -> Result<GithubUserProfi
         .header(AUTHORIZATION, format!("Bearer {}", access_token))
         .header(USER_AGENT, "Tauri GitHub Auth Example") // Required by GitHub API
         .send()
-        .await?;
+        .await?; // Converts reqwest::Error
 
      if response.status().is_success() {
         let profile = response.json::<GithubUserProfile>().await
             .map_err(|e| AuthError::ParseError(format!("Failed to parse user profile: {}", e)))?;
         Ok(profile)
      } else {
-         let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-         eprintln!("GitHub profile fetch error: {}", error_text);
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error reading response body".to_string());
+        eprintln!("GitHub profile fetch error ({}): {}", status, error_text);
         Err(AuthError::GitHubError(format!(
-            "Failed to fetch user profile: {}",
-            error_text
+            "Failed to fetch user profile (status {}): {}",
+             status, error_text
+        )))
+    }
+}
+
+
+// --- NEW: Backend Worker API Interaction ---
+
+async fn sync_user_profile_to_backend(profile: &GithubUserProfile) -> Result<BackendSyncResponse, AuthError> {
+    println!("Attempting to sync profile for user ID: {}", profile.id);
+    let client = reqwest::Client::new();
+    let payload = BackendSyncPayload { profile }; // Add token if needed: , access_token: Some(token) };
+
+    let response = client
+        .post(WORKER_API_URL.as_str())
+        .header(AUTHORIZATION, format!("Bearer {}", *WORKER_API_KEY))
+        .header(CONTENT_TYPE, "application/json")
+        .header(USER_AGENT, "Tauri Backend Sync") // Identify the client
+        .json(&payload) // Send profile data as JSON body
+        .send()
+        .await?; // Converts reqwest::Error
+
+    let status = response.status();
+    println!("Backend sync response status: {}", status);
+
+    if status.is_success() {
+        // Try to parse the success response from the worker
+        let sync_response = response.json::<BackendSyncResponse>().await
+            .map_err(|e| AuthError::ParseError(format!("Failed to parse backend sync response: {}", e)))?;
+        Ok(sync_response) // Return the parsed response (contains success: bool)
+    } else {
+        // Attempt to read error message from backend response body
+        let error_text = response.text().await.unwrap_or_else(|_| format!("HTTP error {}", status));
+        eprintln!("Backend sync failed: {}", error_text);
+        Err(AuthError::BackendSyncFailed(format!(
+            "Backend API returned error (status {}): {}",
+            status, error_text
         )))
     }
 }
