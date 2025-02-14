@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es2021", // Target modern JavaScript features supported by Workers
+    "module": "esnext", // Use ES module syntax
+    "moduleResolution": "node",
+    "lib": ["es2021"], // Include ES2021 library features
+    "esModuleInterop": true, // Allows cleaner imports from CommonJS modules (if any)
+    "forceConsistentCasingInFileNames": true,
+    "strict": true, // Enable all strict type-checking options
+    "skipLibCheck": true, // Skip type checking of declaration files (.d.ts)
+    "outDir": "./dist", // Output directory for compiled JavaScript
+    "rootDir": "./src", // Root directory of source files
+    "types": [
+      "@cloudflare/workers-types" // Include Cloudflare Workers type definitions
+    ]
+  },
+  "include": ["src/**/*.ts"], // Files to include in compilation
+  "exclude": ["node_modules", "dist"] // Folders to exclude
+}

@@ -1,0 +1,26 @@
+{
+    "name": "tauri-github-sync-worker",
+    "version": "1.0.0",
+    "description": "Cloudflare Worker to sync Tauri GitHub auth data to D1",
+    "main": "src/index.ts",
+    "scripts": {
+        "build": "tsc",
+        "deploy": "npm run build && wrangler deploy",
+        "dev": "wrangler dev",
+        "tail": "wrangler tail"
+    },
+    "keywords": [
+        "cloudflare",
+        "worker",
+        "tauri",
+        "d1",
+        "typescript"
+    ],
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "@cloudflare/workers-types": "^4.20231025.0",
+        "typescript": "^5.2.2",
+        "wrangler": "^4.9.1"
+    }
+}
