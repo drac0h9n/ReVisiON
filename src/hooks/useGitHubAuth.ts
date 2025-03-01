@@ -1,63 +1,73 @@
-// src/hooks/useGitHubAuth.ts
-import { useState, useRef, useEffect, useCallback } from "react";
+// src/login/hooks/useGitHubAuth.ts
+import { useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-// 1. 定义类型 (可以放在 hook 文件内，或单独的 types 文件)
-type AuthState = "idle" | "loading" | "success" | "error";
+// 导入 Zustand Store 和相关类型
+import {
+  useAuthStore,
+  type GitHubProfile,
+  type AuthStatus,
+} from "@/store/authStore"; // 确保导入 AuthStatus
 
-interface GitHubProfile {
-  login: string;
-  id: number;
-  name?: string;
-  avatar_url: string;
-  email?: string;
-}
-
-// 2. 定义 Hook 返回值的类型 (可选，但推荐)
+// 定义 Hook 返回值的类型 (使用从 Store 推断的类型)
 interface UseGitHubAuthReturn {
-  authState: AuthState;
+  authState: AuthStatus; // 使用导入的 AuthStatus
   userProfile: GitHubProfile | null;
   authError: string | null;
-  login: () => Promise<void>; // 重命名 handleGitHubLogin 为 login
-  logout: () => void; // 重命名 handleLogout 为 logout
+  login: () => Promise<void>;
+  logout: () => void;
 }
 
-// 3. 创建自定义 Hook
 export function useGitHubAuth(): UseGitHubAuthReturn {
-  // 4. 将 State 和 Refs 移入 Hook
-  const [authState, setAuthState] = useState<AuthState>("idle");
-  const [userProfile, setUserProfile] = useState<GitHubProfile | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
+  // --- 1. 从 Zustand Store 获取状态和 Actions ---
+  const {
+    authState,
+    userProfile,
+    authError,
+    loginStart, // 获取 Store 的 action
+    loginSuccess, // 获取 Store 的 action
+    loginFailure, // 获取 Store 的 action
+    logout: storeLogout, // 获取 Store 的 action (重命名以防与 hook 返回的 logout 冲突)
+  } = useAuthStore();
+
+  // --- Refs for listeners (保持不变) ---
   const unlistenSuccessRef = useRef<UnlistenFn | null>(null);
   const unlistenErrorRef = useRef<UnlistenFn | null>(null);
 
-  // 5. 将 useEffect (事件监听逻辑) 移入 Hook
+  // --- 2. useEffect for listeners (调用 Store Actions) ---
   useEffect(() => {
     let isMounted = true;
+    console.log("[Hook] Setting up auth event listeners...");
 
     const setupListeners = async () => {
       try {
-        // --- 成功监听器 ---
-        const successListener = await listen<{
-          token: string; // Token 可能不需要在 Hook 外部使用，但类型需要匹配
-          profile: GitHubProfile;
-        }>("github_auth_success", (event) => {
-          if (isMounted) {
-            console.log("GitHub Auth Success Event:", event.payload);
-            setUserProfile(event.payload.profile);
-            setAuthState("success");
-            setAuthError(null);
+        // --- 成功监听器: 调用 loginSuccess Action ---
+        const successListener = await listen<{ profile: GitHubProfile }>(
+          "github_auth_success",
+          (event) => {
+            if (isMounted) {
+              console.log(
+                "[Hook] Received github_auth_success event:",
+                event.payload
+              );
+              // 调用 Store Action 更新全局状态
+              loginSuccess(event.payload.profile);
+            }
           }
-        });
+        );
 
-        // --- 错误监听器 ---
+        // --- 错误监听器: 调用 loginFailure Action ---
         const errorListener = await listen<any>(
           "github_auth_error",
           (event) => {
             if (isMounted) {
-              console.error("GitHub Auth Error Event:", event.payload);
+              console.error(
+                "[Hook] Received github_auth_error event:",
+                event.payload
+              );
+              // (错误消息处理逻辑保持不变)
               let errorMessage = "Authentication failed. Please try again.";
               if (event.payload && typeof event.payload === "object") {
                 const errorKey = Object.keys(event.payload)[0];
@@ -69,72 +79,83 @@ export function useGitHubAuth(): UseGitHubAuthReturn {
               } else if (typeof event.payload === "string") {
                 errorMessage = event.payload;
               }
-              setAuthError(errorMessage);
-              setAuthState("error");
-              setUserProfile(null);
+              // 调用 Store Action 更新全局状态
+              loginFailure(errorMessage);
             }
           }
         );
 
-        // --- 存储清理函数 ---
         unlistenSuccessRef.current = successListener;
         unlistenErrorRef.current = errorListener;
-        console.log("Auth event listeners attached.");
+        console.log("[Hook] Auth event listeners successfully attached.");
       } catch (error) {
-        console.error("Failed to setup auth listeners:", error);
+        console.error("[Hook] Failed to attach auth listeners:", error);
         if (isMounted) {
-          setAuthError("Failed to initialize authentication listeners.");
-          setAuthState("error");
+          // 也可以选择调用 loginFailure 来设置初始错误状态
+          loginFailure(
+            `Failed to initialize listeners: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
         }
       }
     };
 
+    // 仅在第一次渲染时设置监听器
+    // 如果 authState 已经是 'success' 或 'loading' (可能来自持久化)，不需要重新设置？
+    // => 监听器通常应该总是设置，因为它们响应 Tauri 后端事件，无论当前状态如何。
+    // 例如，即使用户已登录，也可能需要处理错误事件（比如 token 失效）。
     setupListeners();
 
-    // --- 清理函数 ---
+    // 清理函数 (保持不变)
     return () => {
       isMounted = false;
-      console.log("Cleaning up auth listeners...");
+      console.log("[Hook] Cleaning up auth listeners...");
       if (unlistenSuccessRef.current) {
         unlistenSuccessRef.current();
-        console.log("Success listener detached.");
+        console.log("[Hook] Success listener detached.");
       }
       if (unlistenErrorRef.current) {
         unlistenErrorRef.current();
-        console.log("Error listener detached.");
+        console.log("[Hook] Error listener detached.");
       }
     };
-  }, []); // 依赖项不变
+    // 依赖项为 store actions，因为它们是稳定的引用 (由 Zustand 保证)
+    // 但如果它们在 store 定义中改变，这里需要更新。
+  }, [loginSuccess, loginFailure]);
 
-  // 6. 将触发登录的函数移入 Hook，重命名并用 useCallback 包裹
+  // --- 3. login 函数 (调用 Store Actions) ---
   const login = useCallback(async () => {
-    setAuthState("loading");
-    setAuthError(null);
-    setUserProfile(null);
+    // 调用 Store Action 设置 loading 状态并清除旧数据
+    loginStart();
     try {
-      console.log("Invoking login_with_github command...");
+      console.log("[Hook] Invoking 'login_with_github' command...");
       const authUrl = await invoke<string>("login_with_github");
-      console.log("Received auth URL:", authUrl);
+      console.log("[Hook] Received auth URL, opening:", authUrl);
       await openUrl(authUrl);
-      console.log("GitHub auth URL opened. Waiting for events...");
+      console.log("[Hook] Auth URL opened. Waiting for backend events...");
     } catch (error: any) {
-      console.error("Failed to initiate GitHub login or open URL:", error);
-      setAuthError(`Failed to start login process: ${error?.message || error}`);
-      setAuthState("error");
+      console.error(
+        "[Hook] Failed to initiate GitHub login or open URL:",
+        error
+      );
+      const message = `Login initiation failed: ${
+        error?.message || String(error)
+      }`;
+      // 调用 Store Action 设置 error 状态
+      loginFailure(message);
     }
-  }, []); // 空依赖数组，因为内部没有依赖外部变量
+  }, [loginStart, loginFailure]); // 依赖于 store actions
 
-  // 7. 将登出函数移入 Hook，重命名
+  // --- 4. logout 函数 (调用 Store Action) ---
   const logout = useCallback(() => {
-    setUserProfile(null);
-    setAuthState("idle");
-    setAuthError(null);
-    console.log("User logged out (client-side state cleared).");
-    // 注意：这里只是清除了客户端状态。如果需要，
-    // 可能还需要调用后端来使 token 失效等。
-  }, []); // 空依赖
+    console.log("[Hook] Logout requested. Calling store logout action.");
+    // 调用 Store 的 logout Action 来重置状态
+    storeLogout();
+    // 本地不需要做其他状态清理，由 store 负责
+  }, [storeLogout]); // 依赖于 store action
 
-  // 8. 返回 Hook 需要暴露给组件的状态和函数
+  // --- 5. 返回从 Store 读取的状态和 Hook 封装的 Actions ---
   return {
     authState,
     userProfile,

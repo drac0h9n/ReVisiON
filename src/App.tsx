@@ -1,18 +1,25 @@
 // src/App.tsx
-import GitHubAuth from "./login/GitHubAuth"; // Import the new component
-// Removed unused imports: useGitHubAuth, icons, App.css
-// Assuming global styles (like Tailwind) are imported in main.tsx or index.css
-import "./App.css"; // Importing CSS for the App component
+import React from "react";
+// Import routing components
+import { Routes, Route } from "react-router-dom";
+// Import page components
+import GitHubAuth from "@/login/GitHubAuth";
+import ScreenshotPage from "@/screenshot/ScreenshotPage"; // We will create this next
+import "./App.css"; // Import your CSS file
 
 function App() {
-  // App component is now much simpler
-  // It just renders the GitHubAuth component
-  // In a real app, this might involve routing logic later
+  // App component now acts as the main router outlet
   return (
     <div className="AppContainer">
       {" "}
-      {/* Optional: Add a wrapper div if needed */}
-      <GitHubAuth />
+      {/* Optional outer container */}
+      <Routes>
+        {/* Route for the login/profile page */}
+        <Route path="/" element={<GitHubAuth />} />
+        {/* Route for the new screenshot page */}
+        <Route path="/screenshot" element={<ScreenshotPage />} />
+        {/* You can add more routes here later */}
+      </Routes>
     </div>
   );
 }
