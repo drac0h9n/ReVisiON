@@ -7,9 +7,16 @@
   ],
   "permissions": [
     "core:default",
-    "opener:default",
+    {
+      "identifier": "opener:default",
+      "scope": [
+        "https://github.com/*",
+        "http://127.0.0.1:*"
+      ]
+    },
     "os:default",
     "screenshots:default",
-    "macos-permissions:default"
+    "macos-permissions:default",
+    "deep-link:default"
   ]
 }
