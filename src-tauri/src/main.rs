@@ -1,28 +1,126 @@
 // src-tauri/src/main.rs
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod auth; // 确保 auth 模块被声明
+
+// Declare modules if auth.rs is alongside main.rs
+mod auth;
+
+// Use necessary items from auth module
+use auth::{login_with_github, PendingAuthState, AuthError};
+#[cfg(debug_assertions)]
+use auth::{AuthServerState}; // Keep conditional server state import
+
 use dotenvy::dotenv;
-use auth::{login_with_github, AuthServerState, PendingAuthState, ServerHandle}; // 引入命令和状态类型
+use tauri::{Emitter, Manager, Runtime, State}; // Add Runtime, Remove Emitter (not used directly in main.rs setup)
+use tauri_plugin_deep_link::DeepLinkExt;
+use url::Url; // <-- IMPORT Url for parsing
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tokio::sync::Mutex as TokioMutex;
 
-fn main() {
+// --- Configuration ---
+// Helper function to get the production redirect URI base used for deep linking
+fn get_production_callback_base() -> &'static str {
+    // Must match the scheme and host/path part of your production redirect URI
+    // defined in auth.rs's get_redirect_uri() for non-debug builds.
+    "revision://github/callback"
+}
+
+// Define the greet command here
+#[tauri::command]
+fn greet(name: &str) -> String {
+    format!("Hello, {}! You've been greeted from Rust!", name)
+}
+// --- Main App Setup ---
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
     dotenv().ok();
-    let pending_auth_state: PendingAuthState = Arc::new(Mutex::new(HashMap::new()));
-    let auth_server_state: AuthServerState = Arc::new(TokioMutex::new(ServerHandle { shutdown_tx: None }));
 
-    tauri::Builder::default()
-        // ---> 添加插件初始化 <---
+    let pending_auth_state = PendingAuthState::default();
+
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_macos_permissions::init())
+        .plugin(tauri_plugin_screenshots::init())
         .plugin(tauri_plugin_opener::init())
-        // 也可以链式添加其他需要的插件，比如 os
-        // .plugin(tauri_plugin_os::init()) // 如果 lib.rs 不再是入口，os 插件也需在此初始化
-        .manage(pending_auth_state)
-        .manage(auth_server_state)
+        .plugin(tauri_plugin_os::init())
+        .manage(pending_auth_state.clone())
         .invoke_handler(tauri::generate_handler![
-            login_with_github, // 直接使用引入的函数名
-            // auth::greet, // 如果 greet 命令也需要的话
-        ])
+            greet,
+            login_with_github
+        ]);
+
+    #[cfg(debug_assertions)]
+    {
+        builder = builder.manage(AuthServerState::default());
+        println!("Auth [Debug]: Server state managed.");
+    }
+
+    builder
+        .setup(move |app| { // Use move closure to capture pending_auth_state clone if needed directly, or use app.state()
+            // --- Deep Link Handler Setup ---
+            // Register the handler. It will only be called if the OS is configured
+            // via tauri.conf.json to route the custom scheme URLs to the app.
+            println!("Deep Link: Registering on_open_url handler (will activate if scheme configured).");
+            let handle = app.handle().clone(); // Get an AppHandle
+
+            app.deep_link().on_open_url(move |event| {
+                
+                let received_urls: Vec<Url> = event.urls();
+                
+                
+
+                // Get the pending auth state atomically using the captured handle
+                let pending_state = handle.state::<PendingAuthState>(); // Get managed state
+
+                for url in received_urls {
+                    let url_str = url.to_string();
+                    if url_str.starts_with(get_production_callback_base()) {
+                        println!("Deep Link: Matched production callback URL: {}", url_str);
+
+                        let params: HashMap<String, String> = url
+                            .query_pairs()
+                            .into_owned()
+                            .collect();
+
+                        if let (Some(code), Some(state)) = (params.get("code"), params.get("state")) {
+                            println!("Deep Link: Extracted State: {}, Code: [hidden]", state);
+
+                            let sender = {
+                                let mut map_guard = pending_state.lock().expect("Failed to lock pending auth state for deep link");
+                                map_guard.remove(state)
+                            };
+
+                            match sender {
+                                Some(tx) => {
+                                    println!("Deep Link: State matched. Sending code via channel.");
+                                    let send_result = tx.send(Ok(code.clone()));
+                                    if send_result.is_err() {
+                                        eprintln!("Deep Link: Receiver dropped (Auth task likely timed out or errored). State: {}", state);
+                                        let _ = handle.emit("github_auth_error", Some(&AuthError::CallbackTimeout));
+                                    } else {
+                                         println!("Deep Link: Code sent successfully for state: {}", state);
+                                    }
+                                }
+                                None => {
+                                    eprintln!("Deep Link: Invalid or expired state received: {}", state);
+                                    let _ = handle.emit("github_auth_error", Some(&AuthError::InvalidState));
+                                }
+                            }
+                        } else {
+                            eprintln!("Deep Link: Callback URL missing 'code' or 'state' parameter: {}", url_str);
+                            let _ = handle.emit("github_auth_error", Some(&AuthError::DeepLinkError("Missing code or state".to_string())));
+                        }
+                        // break; // Optional: uncomment if you only expect one matching URL
+                    } else {
+                         println!("Deep Link: Ignoring URL (not the expected callback): {}", url_str);
+                    }
+                }
+            }); // end on_open_url
+
+            Ok(())
+        }) // end setup
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn main() {
+    run();
 }

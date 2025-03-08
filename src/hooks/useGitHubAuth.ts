@@ -1,4 +1,4 @@
-// src/login/hooks/useGitHubAuth.ts
+// src/hooks/useGitHubAuth.ts
 import { useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";

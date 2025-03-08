@@ -1,5 +1,4 @@
 // src/login/GitHubAuth.tsx
-import React from "react";
 // Import useNavigate
 import { useNavigate } from "react-router-dom";
 import { useGitHubAuth } from "@/hooks/useGitHubAuth";

@@ -1,5 +1,4 @@
 // src/App.tsx
-import React from "react";
 // Import routing components
 import { Routes, Route } from "react-router-dom";
 // Import page components
