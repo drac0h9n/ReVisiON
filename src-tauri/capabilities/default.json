@@ -14,9 +14,22 @@
         "http://127.0.0.1:*"
       ]
     },
+    {
+      "identifier": "core:tray:default",
+      "allow": [
+        "main-tray"
+      ]
+    },
+    "core:window:allow-is-visible",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-hide",
+    "core:window:allow-get-all-windows",
+    "core:event:allow-listen",
     "os:default",
     "screenshots:default",
     "macos-permissions:default",
-    "deep-link:default"
+    "deep-link:default",
+    "process:default"
   ]
 }

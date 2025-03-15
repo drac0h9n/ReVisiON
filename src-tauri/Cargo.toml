@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [ "protocol-asset", "devtools"] }
+tauri = { version = "2", features = [ "tray-icon", "protocol-asset", "devtools"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -38,5 +38,9 @@ dotenvy = "0.15.7"
 tauri-plugin-screenshots = "2.1.0"
 tauri-plugin-macos-permissions = "2.2.0"
 tauri-plugin-deep-link = "2"
+tauri-plugin-process = "2"
 [features]
 with-devtools = ["tauri/devtools"]
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"

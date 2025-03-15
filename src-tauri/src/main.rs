@@ -5,15 +5,15 @@
 mod auth;
 
 // Use necessary items from auth module
-use auth::{login_with_github, PendingAuthState, AuthError};
 #[cfg(debug_assertions)]
-use auth::{AuthServerState}; // Keep conditional server state import
+use auth::AuthServerState;
+use auth::{login_with_github, AuthError, PendingAuthState}; // Keep conditional server state import
 
 use dotenvy::dotenv;
+use std::collections::HashMap;
 use tauri::{Emitter, Manager, Runtime, State}; // Add Runtime, Remove Emitter (not used directly in main.rs setup)
 use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url; // <-- IMPORT Url for parsing
-use std::collections::HashMap;
 
 // --- Configuration ---
 // Helper function to get the production redirect URI base used for deep linking
@@ -31,18 +31,24 @@ fn greet(name: &str) -> String {
 // --- Main App Setup ---
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-      // Load environment variables based on build profile
-      if cfg!(debug_assertions) {
+    // Load environment variables based on build profile
+    if cfg!(debug_assertions) {
         println!("Main: Loading .env.development");
         match dotenvy::from_filename(".env.development") {
             Ok(_) => println!("Main: Successfully loaded .env.development"),
-            Err(e) => println!("Main: Could not load .env.development - {}. Relying on system env vars.", e),
+            Err(e) => println!(
+                "Main: Could not load .env.development - {}. Relying on system env vars.",
+                e
+            ),
         }
     } else {
         println!("Main: Loading .env.production");
-         match dotenvy::from_filename(".env.production") {
+        match dotenvy::from_filename(".env.production") {
             Ok(_) => println!("Main: Successfully loaded .env.production"),
-            Err(e) => println!("Main: Could not load .env.production - {}. Relying on system env vars.", e),
+            Err(e) => println!(
+                "Main: Could not load .env.production - {}. Relying on system env vars.",
+                e
+            ),
         }
     }
     // Optionally, load default .env as a fallback or for shared variables
@@ -51,16 +57,15 @@ pub fn run() {
     let pending_auth_state = PendingAuthState::default();
 
     let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_macos_permissions::init())
         .plugin(tauri_plugin_screenshots::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .manage(pending_auth_state.clone())
-        .invoke_handler(tauri::generate_handler![
-            greet,
-            login_with_github
-        ]);
+        .invoke_handler(tauri::generate_handler![greet, login_with_github]);
 
     #[cfg(debug_assertions)]
     {
