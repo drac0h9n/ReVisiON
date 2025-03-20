@@ -12,7 +12,7 @@ const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 // 启用CORS
 app.use(
   cors({
-    origin: ["http://localhost:3000", "https://yourdomain.com"],
+    origin: ["http://localhost:1420", "https://chat.l1nk.mom"],
     credentials: true,
   })
 );
@@ -61,34 +61,32 @@ app.get("/api/me", authMiddleware, async (c) => {
 
 // 主页
 app.get("/", async (c) => {
+  // 检查是否已登录
+  const authCookie = getCookie(c, "auth");
+  if (authCookie) {
+    try {
+      const secret = new TextEncoder().encode(c.env.JWT_SECRET);
+      await jose.jwtVerify(authCookie, secret);
+      // 如果token有效，重定向到应用页面
+      return c.redirect("http://localhost:1420");
+    } catch (e) {
+      // token无效，继续显示登录页面
+    }
+  }
+
   return c.html(`
-	  <!DOCTYPE html>
-	  <html>
-		<head>
-		  <title>GitHub Auth Demo</title>
-		</head>
-		<body>
-		  <h1>GitHub Auth Demo</h1>
-		  <a href="/auth/github">Login with GitHub</a>
-		  <div id="user-info"></div>
-		  <script>
-			// 简单的前端逻辑检查登录状态
-			fetch('/api/me', { credentials: 'include' })
-			  .then(res => {
-				if (res.ok) return res.json();
-				throw new Error('Not authenticated');
-			  })
-			  .then(user => {
-				document.getElementById('user-info').innerHTML = 
-				  \`<p>Logged in as \${user.username}</p>
-				   <img src="\${user.avatar_url}" width="50">
-				   <p><a href="/auth/logout">Logout</a></p>\`;
-			  })
-			  .catch(err => console.log('Not logged in'));
-		  </script>
-		</body>
-	  </html>
-	`) as Response; // 添加类型断言
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>GitHub Auth Demo</title>
+      </head>
+      <body>
+        <h1>GitHub Auth Demo</h1>
+        <a href="/auth/github">Login with GitHub</a>
+        <div id="user-info"></div>
+      </body>
+    </html>
+  `) as Response;
 });
 
 export default app;

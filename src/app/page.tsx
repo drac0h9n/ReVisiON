@@ -2,18 +2,28 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { useAuthStore } from "@/stores/authStore";
+import { AuthStatus } from "@/types/auth";
+import { useCheckSession } from "@/hooks/useAuth";
 
 export default function HomePage() {
   const navigate = useNavigate();
+  const { status, user } = useAuthStore();
+  // 使用React Query检查会话状态
+  const { refreshSession } = useCheckSession();
 
   // 检查用户是否已登录，如果已登录，直接跳转到新对话页面
   useEffect(() => {
-    // 在实际应用中，你会检查用户认证状态
-    const isLoggedIn = localStorage.getItem("isLoggedIn") === "true";
-    if (isLoggedIn) {
+    // 初始状态时刷新会话检查
+    if (status === AuthStatus.INITIAL) {
+      refreshSession();
+    }
+
+    // 如果用户已认证，跳转到新对话页面
+    if (status === AuthStatus.AUTHENTICATED && user) {
       navigate("/chat/new");
     }
-  }, [navigate]);
+  }, [status, user, navigate, refreshSession]);
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-background p-4">

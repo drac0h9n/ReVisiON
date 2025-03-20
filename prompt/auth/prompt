@@ -1,0 +1,183 @@
+React Query + Zustand 认证方案详细设计
+1. 整体架构设计
+React Query + Zustand认证方案构建了一个分层的状态管理和API交互系统，通过清晰的职责分离实现高效的认证流程管理。以下是需要实现的关键组件和模块：
+
+2. Zustand 状态管理层
+2.1 认证状态存储设计
+认证核心状态：设计一个存储用户认证状态的中央存储，包含：
+当前认证状态（初始/认证中/已认证/未认证）
+用户信息对象
+错误信息
+加载状态标识
+状态转换方法：
+初始化认证状态
+开始认证流程
+认证成功处理
+认证失败处理
+注销登录
+刷新用户信息
+2.2 会话管理机制
+会话持久化：设计会话信息的持久化机制，确保应用重启后认证状态保持
+会话有效性检查：实现会话过期逻辑判断和自动处理机制
+会话刷新机制：定期检查会话状态，必要时自动刷新
+3. React Query 数据获取层
+3.1 认证相关查询和变更
+GitHub OAuth初始化查询：调用/auth/github端点获取认证URL
+回调处理查询：处理GitHub回调，获取用户信息和令牌
+用户信息查询：获取经过认证的用户详细信息
+会话验证查询：验证当前会话是否有效
+3.2 请求拦截器配置
+请求前拦截：自动添加认证信息到请求头
+响应拦截：统一处理认证错误（如401、403错误）
+请求重试策略：针对网络错误和特定HTTP状态码设计重试逻辑
+3.3 缓存策略设计
+用户数据缓存：优化用户信息的缓存时间和失效策略
+依赖查询链：设计查询之间的依赖关系，确保数据一致性
+选择性更新：实现细粒度的缓存更新策略
+4. 认证流程实现
+4.1 GitHub OAuth流程
+认证发起流程：设计用户点击"GitHub登录"按钮后的完整流程
+状态参数生成：生成安全的state参数防止CSRF攻击
+认证重定向处理：处理向GitHub的重定向和返回应用的逻辑
+授权码处理：处理GitHub返回的授权码和state验证
+4.2 认证回调处理
+参数验证：验证回调URL中的所有参数
+错误处理：设计错误情况下的用户体验和流程
+成功流程：定义成功认证后的状态更新和路由跳转
+4.3 会话管理
+Cookie处理：与HTTP-only Cookie交互的策略
+令牌管理：处理JWT令牌的存储和解析（仅展示目的）
+会话超时处理：定义会话过期时的自动处理流程
+5. 与Tauri集成
+5.1 本地存储方案
+安全存储：使用Tauri提供的安全存储API存储敏感信息
+多平台适配：确保在不同操作系统下存储机制的一致性
+存储加密：实施本地存储数据的加密策略
+5.2 平台特定功能
+深度链接处理：配置应用处理OAuth回调的深度链接
+系统通知集成：使用系统通知提醒认证状态变化
+窗口管理：认证过程中的窗口管理策略
+6. 用户体验优化
+6.1 加载状态处理
+骨架屏设计：在认证过程中提供视觉反馈
+渐进式加载：设计数据加载的优先级和顺序
+状态转换动画：提供流畅的状态转换体验
+6.2 错误处理和恢复
+错误分类：区分网络错误、认证错误和服务器错误
+友好错误消息：设计面向用户的错误提示
+恢复策略：提供错误后的恢复路径和选项
+6.3 认证持久性
+自动登录：实现应用启动时的自动登录机制
+会话恢复：设计意外关闭后的会话恢复流程
+多标签页/窗口同步：确保多窗口间认证状态一致
+
+
+//访问https://chat.l1nk.mom/auth/github会自动跳转github进行登录，登录后会跳转回https://chat.l1nk.mom/，然后会跳转回http://localhost:1420,此时可以访问https://chat.l1nk.mom/api/me获取已登录用户信息
+
+
+//https://chat.l1nk.mom/api/me返回的类型
+export interface User {
+  id: string;
+  username: string;
+  email: string | null;
+  avatarUrl?: string;
+}
+
+请你根据上面的流程，先定义src/types/auth.ts，在修改app/(auth)/login页面的设计，使其符合认证流程
+
+
+src/app/(auth)/login/page.tsx:
+// src/app/(auth)/login/page.tsx
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent } from "@/components/ui/card";
+
+export default function LoginPage() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(false);
+  const navigate = useNavigate();
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    // 在实际应用中添加登录逻辑
+    navigate("/chat/new");
+  };
+
+  return (
+    <div className="flex items-center justify-center min-h-screen bg-background p-4">
+      <Card className="w-full max-w-md">
+        <CardContent className="pt-6">
+          <div className="flex flex-col items-center mb-6">
+            <div className="w-20 h-20 bg-primary rounded-full flex items-center justify-center text-2xl font-bold text-primary-foreground mb-4">
+              AI
+            </div>
+            <h2 className="text-2xl font-bold mb-2">智能对话助手</h2>
+            <p className="text-muted-foreground text-center">
+              你的AI助手，随时为你解答问题
+            </p>
+          </div>
+
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">邮箱</Label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="请输入邮箱"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">密码</Label>
+              <Input
+                id="password"
+                type="password"
+                placeholder="请输入密码"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="remember"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                  className="rounded border-gray-300"
+                />
+                <label htmlFor="remember" className="text-sm">
+                  记住我
+                </label>
+              </div>
+              <a href="#" className="text-sm text-primary hover:underline">
+                忘记密码？
+              </a>
+            </div>
+
+            <Button type="submit" className="w-full">
+              登录
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={() => navigate("/register")}
+            >
+              注册账号
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
