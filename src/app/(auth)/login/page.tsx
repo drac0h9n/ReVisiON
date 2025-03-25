@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useAuthStore } from "@/stores/authStore";
 import { useGitHubAuth } from "@/hooks/useAuth";
 import { AuthStatus } from "@/types/auth";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -22,10 +23,27 @@ export default function LoginPage() {
 
   const initiateGitHubAuth = async () => {
     try {
-      await handleLogin();
-      // Redirect is handled by the hook
+      // 创建一个新的WebView窗口
+      const webview = new WebviewWindow("baidu", {
+        url: "https://chat.l1nk.mom/auth/github",
+        title: "Github",
+        width: 800,
+        height: 600,
+        center: true,
+        decorations: true,
+        resizable: true,
+      });
+
+      // 监听窗口创建是否成功
+      webview.once("tauri://created", () => {
+        console.log("Github created.");
+      });
+
+      webview.once("tauri://error", (error) => {
+        console.error("Create github error:", error);
+      });
     } catch (error) {
-      console.error("GitHub authentication failed:", error);
+      console.error("Create github error:", error);
     }
   };
 
