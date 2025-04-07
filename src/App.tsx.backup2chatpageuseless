@@ -1,0 +1,174 @@
+import React, { useState, useRef, useEffect, useCallback } from "react";
+import "./App.css";
+
+function App() {
+  // 假设你有一个方法来检测平台，你可以这样传递 (但组件内部目前未使用它进行样式判断)
+  // const platform = window.innerWidth < 768 ? 'mobile' : 'pc';
+
+  return (
+    <div className="App">
+      {/* <ChatPage userPlatform={platform} /> */}
+      <ChatPage />
+    </div>
+  );
+}
+
+export default App;
+
+// 定义消息对象的类型接口
+interface ChatMessage {
+  id: number;
+  text: string;
+  sender: "user" | "other"; // 'user' 代表用户发送, 'other' 代表接收
+}
+
+// (可选) 定义平台类型，如果你需要基于此做特定逻辑
+// type UserPlatform = 'pc' | 'mobile';
+
+// 组件 Props 类型 (如果需要从父组件接收 userPlatform)
+// interface ChatPageProps {
+//   userPlatform: UserPlatform;
+// }
+
+// React 函数式组件
+const ChatPage: React.FC = (/*{ userPlatform }: ChatPageProps*/) => {
+  // 消息列表状态
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    // 初始可以放一些示例消息
+    { id: 1, text: "你好！请问有什么可以帮你的吗？", sender: "other" },
+    { id: 2, text: "我想了解一下 Tailwind CSS。", sender: "user" },
+    {
+      id: 3,
+      text: "当然！Tailwind CSS 是一个实用工具优先的 CSS 框架...",
+      sender: "other",
+    },
+  ]);
+  // 当前输入框内容状态
+  const [currentInput, setCurrentInput] = useState<string>("");
+  // 引用消息列表容器，用于自动滚动
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageContainerRef = useRef<HTMLDivElement>(null);
+
+  // 自动滚动到底部的函数
+  const scrollToBottom = () => {
+    // 使用平滑滚动效果
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    // 或者直接滚动到底部 (如果平滑效果有问题)
+    // if (messageContainerRef.current) {
+    //   messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+    // }
+  };
+
+  // 当消息列表更新时，自动滚动到底部
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]); // 依赖于 messages 数组
+
+  // 处理发送消息的函数 (使用 useCallback 优化)
+  const handleSendMessage = useCallback(() => {
+    const trimmedInput = currentInput.trim();
+    if (trimmedInput === "") {
+      return; // 不发送空消息
+    }
+
+    // 创建用户发送的新消息
+    const newUserMessage: ChatMessage = {
+      id: Date.now(), // 使用时间戳作为临时 ID
+      text: trimmedInput,
+      sender: "user",
+    };
+
+    // 更新消息列表，先添加用户消息
+    setMessages((prevMessages) => [...prevMessages, newUserMessage]);
+
+    // 清空输入框
+    setCurrentInput("");
+
+    // --- 模拟接收回复 ---
+    // 实际应用中，这里会调用 API 发送消息并等待回复
+    // 这里用 setTimeout 模拟异步回复
+    setTimeout(() => {
+      const replyMessage: ChatMessage = {
+        id: Date.now() + 1, // 确保 ID 不同
+        text: `已收到你的消息: "${trimmedInput}"。这是一个模拟回复。`,
+        sender: "other",
+      };
+      setMessages((prevMessages) => [...prevMessages, replyMessage]);
+    }, 1000); // 延迟 1 秒回复
+  }, [currentInput]); // 依赖于 currentInput
+
+  // 处理输入框内容变化
+  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setCurrentInput(event.target.value);
+  };
+
+  // 处理键盘事件 (Enter 发送)
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    // 检查是否按下了 Enter 键，并且没有同时按下 Shift 键 (允许 Shift+Enter 换行)
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault(); // 阻止默认的 Enter 换行行为
+      handleSendMessage();
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-gray-100">
+      {/* 顶部标题栏 (可选) */}
+      <header className="bg-white shadow-md p-4 text-center font-semibold">
+        对话机器人
+      </header>
+
+      {/* 消息显示区域 */}
+      <div
+        ref={messageContainerRef} // 添加 ref
+        className="flex-grow overflow-y-auto p-4 space-y-4" // flex-grow 占据剩余空间, overflow-y-auto 允许滚动, p-4 内边距, space-y-4 消息间距
+      >
+        {messages.map((message) => (
+          <div
+            key={message.id}
+            className={`flex ${
+              message.sender === "user" ? "justify-end" : "justify-start" // 用户消息居右，对方消息居左
+            }`}
+          >
+            <div
+              className={`max-w-[80%] md:max-w-[60%] p-3 rounded-lg shadow ${
+                // 限制最大宽度，增加阴影
+                message.sender === "user"
+                  ? "bg-blue-500 text-white" // 用户消息样式：蓝色背景，白色文字
+                  : "bg-white text-gray-800" // 接收消息样式：白色背景，深灰文字
+              }`}
+            >
+              {message.text}
+            </div>
+          </div>
+        ))}
+        {/* 空的 div 用于滚动定位 */}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* 输入区域 */}
+      <div className="bg-white p-4 border-t border-gray-200 flex items-center">
+        <input
+          type="text"
+          value={currentInput}
+          onChange={handleInputChange}
+          onKeyDown={handleKeyDown} // 添加键盘事件监听
+          placeholder="输入消息..."
+          aria-label="聊天输入框"
+          className="flex-grow border border-gray-300 rounded-l-lg p-2 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent" // flex-grow 占据空间, 样式调整, 焦点效果
+        />
+        <button
+          onClick={handleSendMessage}
+          disabled={currentInput.trim() === ""} // 输入为空时禁用按钮
+          aria-label="发送消息"
+          className={`bg-blue-500 text-white font-semibold p-2 rounded-r-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1 ${
+            // 按钮样式，hover 效果，焦点效果
+            currentInput.trim() === "" ? "opacity-50 cursor-not-allowed" : "" // 禁用时的样式
+          }`}
+        >
+          发送
+        </button>
+      </div>
+    </div>
+  );
+};
