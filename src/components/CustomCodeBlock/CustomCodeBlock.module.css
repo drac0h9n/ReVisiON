@@ -1,0 +1,113 @@
+/* src/components/CustomCodeBlock/CustomCodeBlock.module.css */
+
+.codeBlockContainer {
+  position: relative; /* Crucial for absolute positioning of the button */
+  margin: 0.5em 0; /* Add some vertical margin around the block */
+  border-radius: 4px; /* Rounded corners for the container */
+  /* Background is set by the syntax highlighter theme */
+  font-size: 0.9em; /* Slightly smaller font for code */
+  overflow: hidden; /* Contain the absolutely positioned elements */
+}
+
+.buttonContainer {
+  position: absolute;
+  top: 4px; /* Adjust as needed */
+  right: 4px; /* Adjust as needed */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: rgba(
+    40,
+    42,
+    54,
+    0.7
+  ); /* Slightly transparent background matching oneDark-ish */
+  padding: 2px 6px;
+  border-radius: 4px;
+  z-index: 1; /* Ensure button is above the code */
+}
+
+.languageLabel {
+  font-size: 0.8em;
+  color: #bbb; /* Light grey color for language */
+  font-family: sans-serif; /* Use a standard font for the label */
+  text-transform: lowercase;
+}
+
+.copyButton {
+  /* Style the button */
+  color: #bbb; /* Light grey icon */
+  border: none;
+  background: transparent !important; /* Override AntD potentially */
+  padding: 4px !important; /* Control padding */
+  height: auto !important; /* Override AntD height */
+  line-height: 1 !important; /* Ensure icon is centered */
+}
+
+.copyButton:hover {
+  color: #fff; /* White on hover */
+  background: transparent !important;
+}
+
+/* Target the icon specifically if needed */
+.copyButton :global(.anticon) {
+  font-size: 1em; /* Adjust icon size */
+  vertical-align: middle; /* Align icon nicely */
+}
+
+/* Style for Check icon when copied */
+.copyButton :global(.anticon-check) {
+  color: #50fa7b; /* Green color for success check (matches dracula/oneDark themes) */
+}
+
+/* Ensure the SyntaxHighlighter's div/pre takes up space correctly */
+/* Targeting generated class name might be fragile, use customStyle as preferred */
+/* If syntaxhighlighter puts content in a <pre>, style that */
+.codeBlockContainer :global(pre) {
+  /* Styles applied via customStyle prop in the component is better */
+}
+
+/* Style the code tag inside if needed */
+.codeBlockContainer :global(code) {
+  /* Example: force font family if theme doesn't */
+  /* font-family: "Fira Code", Consolas, Monaco, "Andale Mono", "Ubuntu Mono", monospace; */
+  /* font-variant-ligatures: common-ligatures; */ /* Enable ligatures if font supports it */
+}
+
+/* Horizontal scrollbar styling (optional) */
+.codeBlockContainer :global(div[data-testid="react-syntax-highlighter"]) {
+  /* Target the outer div if PreTag="div" */
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: #6272a4 #282a36; /* Scrollbar thumb and track (Dracula/oneDark-like) */
+}
+
+.codeBlockContainer
+  :global(div[data-testid="react-syntax-highlighter"])::-webkit-scrollbar {
+  /* Webkit */
+  height: 8px;
+  width: 8px;
+}
+
+.codeBlockContainer
+  :global(
+    div[data-testid="react-syntax-highlighter"]
+  )::-webkit-scrollbar-track {
+  background: #282a36; /* Track color */
+  border-radius: 4px;
+}
+
+.codeBlockContainer
+  :global(
+    div[data-testid="react-syntax-highlighter"]
+  )::-webkit-scrollbar-thumb {
+  background-color: #6272a4; /* Thumb color */
+  border-radius: 4px;
+  border: 2px solid #282a36; /* Track color create padding effect */
+}
+
+.codeBlockContainer
+  :global(
+    div[data-testid="react-syntax-highlighter"]
+  )::-webkit-scrollbar-thumb:hover {
+  background-color: #7b8ab8;
+}
