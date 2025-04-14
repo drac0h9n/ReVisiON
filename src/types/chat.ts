@@ -11,7 +11,7 @@ export interface ChatMessage {
   /** The main text content of the message (can be Markdown). */
   text: string;
   /** Optional: Asset URL for a small thumbnail associated with the message (primarily for user messages showing the related screenshot). */
-  imageAssetUrl?: string | null; // Allow null Explicitly
+  // imageAssetUrl?: string | null; // Allow null Explicitly
   /** Timestamp when the message was created (e.g., Date.now()). */
   timestamp: number;
   /** Optional: Indicates if this is an AI message currently being generated. */

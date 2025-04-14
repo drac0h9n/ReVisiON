@@ -1,6 +1,6 @@
 // src/components/MessageBubble/MessageBubble.tsx
 import React from "react";
-import { Avatar, Image, Spin, Alert } from "antd";
+import { Avatar, Spin, Alert } from "antd";
 import { UserOutlined, RobotOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,8 +16,7 @@ interface MessageBubbleProps {
 }
 
 const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
-  const { sender, text, imageAssetUrl, isLoading, isError, timestamp } =
-    message;
+  const { sender, text, isLoading, isError, timestamp } = message;
   const isUser = sender === "user";
 
   // Format timestamp (optional)
@@ -44,17 +43,6 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
             isUser ? styles.userBubble : styles.aiBubble
           }`}
         >
-          {/* Small Image Thumbnail (for user messages) */}
-          {/* Only show if it's a user message AND there's an image URL */}
-          {isUser && imageAssetUrl && (
-            <Image
-              src={imageAssetUrl}
-              alt="Context Screenshot"
-              className={styles.inlineThumbnail}
-              preview={true} // Enable preview on the small thumb too
-            />
-          )}
-
           {/* Loading Indicator (for AI messages) */}
           {isLoading && !isUser && (
             <div className={styles.loadingContainer}>

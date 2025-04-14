@@ -1,18 +1,15 @@
-// src/screenshot/query.tsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Image, message, Input, Button } from "antd"; // <-- Import Ant Design components
+import { Image, message, Input, Button } from "antd";
 import { SendOutlined } from "@ant-design/icons";
-import { convertFileSrc } from "@tauri-apps/api/core"; // <-- Import convertFileSrc
-import { listen } from "@tauri-apps/api/event"; // <-- Import listen
-import { v4 as uuidv4 } from "uuid"; // For generating unique message IDs
+import { convertFileSrc, invoke } from "@tauri-apps/api/core"; // <-- Import invoke
+import { listen } from "@tauri-apps/api/event";
+import { v4 as uuidv4 } from "uuid";
 
-// Import types and new components (assuming paths)
 import { ChatMessage } from "@/types/chat";
 import MessageBubble from "@/components/MessageBubble/MessageBubble";
 
-import "./query.css"; // <-- Import CSS
+import "./query.css";
 
-// Extend window type for the initial path
 declare global {
   interface Window {
     __INITIAL_SCREENSHOT_PATH__?: string | null;
@@ -31,20 +28,19 @@ const QueryPage: React.FC = () => {
   const [inputValue, setInputValue] = useState<string>("");
   const [isLoadingAI, setIsLoadingAI] = useState<boolean>(false);
 
-  const chatAreaRef = useRef<HTMLDivElement>(null); // Ref for scrolling chat
+  const chatAreaRef = useRef<HTMLDivElement>(null);
 
-  // --- Function to process a new screenshot path ---
   const processScreenshotPath = useCallback(async (path: string | null) => {
+    /* ... as before ... */
     if (path) {
       try {
+        // IMPORTANT: Convert path for display *only*. Pass raw path to backend.
         const assetUrl = await convertFileSrc(path);
         console.log(
-          `[QueryPage] Converted path "${path}" to asset URL "${assetUrl}"`
+          `[QueryPage] Converted path "${path}" to asset URL "${assetUrl}" for display.`
         );
         setScreenshotAssetUrl(assetUrl);
-        setRawScreenshotPath(path);
-        // Optional: add an initial system message?
-        // setMessages(prev => [...prev, { id: uuidv4(), sender: 'ai', text: "Screenshot loaded.", timestamp: Date.now() }]);
+        setRawScreenshotPath(path); // Store the original path
       } catch (error) {
         console.error("[QueryPage] Error converting file src:", error);
         message.error("无法加载截图预览");
@@ -55,156 +51,174 @@ const QueryPage: React.FC = () => {
       console.log("[QueryPage] Received null path, clearing screenshot.");
       setScreenshotAssetUrl(null);
       setRawScreenshotPath(null);
-      message.warning("未提供截图或加载失败");
+      // message.warning("未提供截图或加载失败"); // Optional: less noisy
     }
   }, []);
 
-  // --- Effect 1: Handle initial screenshot passed via script ---
+  // --- Effect 1: Handle initial screenshot ---
   useEffect(() => {
-    console.log(
-      "[QueryPage] Component mounted, checking for initial screenshot..."
-    );
+    /* ... as before ... */
+    console.log("[QueryPage] Checking for initial screenshot...");
     if (window.__INITIAL_SCREENSHOT_PATH__ !== undefined) {
       const initialPath = window.__INITIAL_SCREENSHOT_PATH__;
       console.log(`[QueryPage] Found initial path: ${initialPath}`);
-      processScreenshotPath(initialPath);
-      // Clear it to prevent reprocessing on potential future updates/remounts
+      // Use a timeout of 0 to ensure state updates happen *after* initial render cycle
+      // This can sometimes help with race conditions in React/Tauri initialization
+      setTimeout(() => processScreenshotPath(initialPath), 0);
       delete window.__INITIAL_SCREENSHOT_PATH__;
     } else {
-      console.log(
-        "[QueryPage] No initial screenshot path found on window object."
-      );
+      console.log("[QueryPage] No initial screenshot path found.");
     }
-  }, [processScreenshotPath]); // Depend on processScreenshotPath
+  }, [processScreenshotPath]);
 
-  // --- Effect 2: Listen for new screenshots from App.tsx ---
+  // --- Effect 2: Listen for new screenshots ---
   useEffect(() => {
-    console.log("[QueryPage] Setting up 'new_screenshot' event listener...");
+    /* ... as before ... */
+    console.log("[QueryPage] Setting up 'new_screenshot' listener...");
     let unlisten: (() => void) | undefined;
-
     const setupListener = async () => {
       try {
         unlisten = await listen<{ path: string | null }>(
           "new_screenshot",
           (event) => {
             console.log(
-              `[QueryPage] Received 'new_screenshot' event with payload:`,
+              `[QueryPage] Received 'new_screenshot' event:`,
               event.payload
             );
-            processScreenshotPath(event.payload?.path ?? null); // Handle potential null path in event
+            // Use timeout here as well for consistency
+            setTimeout(
+              () => processScreenshotPath(event.payload?.path ?? null),
+              0
+            );
           }
         );
-        console.log(
-          "[QueryPage] 'new_screenshot' event listener attached successfully."
-        );
+        console.log("[QueryPage] Listener attached.");
       } catch (error) {
-        console.error("[QueryPage] Failed to setup event listener:", error);
+        console.error("[QueryPage] Failed setup listener:", error);
         message.error("无法监听新的截图事件");
       }
     };
-
     setupListener();
-
-    // Cleanup function
     return () => {
-      console.log("[QueryPage] Cleaning up 'new_screenshot' event listener...");
-      if (unlisten) {
-        unlisten();
-        console.log("[QueryPage] 'new_screenshot' event listener detached.");
-      } else {
-        console.log("[QueryPage] No event listener function found to detach.");
-      }
+      console.log("[QueryPage] Cleaning up listener...");
+      unlisten?.();
+      console.log("[QueryPage] Listener detached.");
     };
-  }, [processScreenshotPath]); // Depend on processScreenshotPath
+  }, [processScreenshotPath]);
 
-  // --- Effect 3: Auto-scroll chat area ---
+  // --- Effect 3: Auto-scroll ---
   useEffect(() => {
+    /* ... as before ... */
     if (chatAreaRef.current) {
       chatAreaRef.current.scrollTop = chatAreaRef.current.scrollHeight;
     }
-  }, [messages]); // Scroll whenever messages change
+  }, [messages]);
 
-  // --- Input Change Handler ---
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInputValue(e.target.value);
   };
 
-  // --- Send Message Handler (Placeholder AI Logic) ---
+  // --- Send Message Handler (UPDATED LOGIC) ---
   const handleSendMessage = useCallback(async () => {
     const trimmedInput = inputValue.trim();
-    if (!trimmedInput) return;
+    if (!trimmedInput && !rawScreenshotPath) {
+      // Prevent sending if both text and image are missing
+      message.warning("Please enter text or provide a screenshot.");
+      return;
+    }
+    if (isLoadingAI) return; // Prevent double sending
 
     const newUserMessage: ChatMessage = {
       id: uuidv4(),
       sender: "user",
-      text: trimmedInput,
-      imageAssetUrl: messages.length === 0 ? screenshotAssetUrl : undefined, // Attach screenshot only to the first user message potentially
+      text: trimmedInput || "(Query related to image)", // Add placeholder if text is empty but image exists
       timestamp: Date.now(),
+      // imageAssetUrl is removed if modifying ChatMessage type
     };
 
     const aiLoadingMessage: ChatMessage = {
       id: uuidv4(),
       sender: "ai",
-      text: "", // Initially empty
+      text: "",
       timestamp: Date.now(),
       isLoading: true,
     };
 
+    // Add user message and AI loading placeholder immediately
     setMessages((prev) => [...prev, newUserMessage, aiLoadingMessage]);
     setInputValue("");
-    setIsLoadingAI(true);
+    setIsLoadingAI(true); // Set loading state
 
     console.log(
-      "[QueryPage] Sending message (simulation)... Query:",
+      "[QueryPage] Sending to backend. Query:",
       trimmedInput,
-      "Screenshot:",
+      "Screenshot Path:",
       rawScreenshotPath ?? "None"
     );
 
-    // **--- Placeholder for actual AI call ---**
-    // Replace this setTimeout with your actual API call
-    await new Promise((resolve) => setTimeout(resolve, 1500)); // Simulate network delay
+    try {
+      // *** Call the Tauri command ***
+      const aiTextResponse = await invoke<string>("send_query_to_worker", {
+        text: trimmedInput, // Pass the text query
+        imagePath: rawScreenshotPath, // Pass the RAW file path or null
+      });
+      console.log(
+        "[QueryPage] Received AI response from backend:",
+        aiTextResponse
+      );
 
-    // Simulate response
-    const aiResponseMessage: Partial<ChatMessage> = {
-      // Partial because we update an existing entry
-      text: `AI response to "${trimmedInput}". ${
-        rawScreenshotPath ? "I see the screenshot." : "No screenshot provided."
-      }`,
-      isLoading: false,
-      isError: false, // Set to true on actual API error
-    };
+      // Update the AI loading message with the actual successful response
+      setMessages((prev) =>
+        prev.map(
+          (msg) =>
+            msg.id === aiLoadingMessage.id
+              ? {
+                  ...msg, // Spread the existing message properties (id, sender, timestamp)
+                  text: aiTextResponse, // Update the text
+                  isLoading: false, // Set loading to false
+                  isError: false, // Set error to false
+                }
+              : msg // Keep other messages as they are
+        )
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      console.error(
+        "[QueryPage] Error invoking send_query_to_worker:",
+        errorMessage
+      );
+      message.error(`Failed to get AI response: ${errorMessage}`); // Show error to user
 
-    // Update the specific AI loading message
-    setMessages((prev) =>
-      prev.map((msg) =>
-        msg.id === aiLoadingMessage.id ? { ...msg, ...aiResponseMessage } : msg
-      )
-    );
-    // **--- End Placeholder ---**
+      // Update the AI loading message with the error state
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === aiLoadingMessage.id
+            ? {
+                ...msg,
+                text: `Error: ${errorMessage}`, // Show error in bubble
+                isLoading: false, // Set loading to false
+                isError: true, // Set error to true
+              }
+            : msg
+        )
+      );
+    } finally {
+      setIsLoadingAI(false); // Ensure loading state is cleared regardless of success/failure
+    }
+  }, [inputValue, rawScreenshotPath, isLoadingAI]); // Include isLoadingAI in dependencies
 
-    setIsLoadingAI(false);
-  }, [inputValue, rawScreenshotPath, screenshotAssetUrl, messages.length]); // Include dependencies
-
-  // Handle Enter press in TextArea (Shift+Enter for newline)
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault(); // Prevent default newline insertion
+      event.preventDefault();
       handleSendMessage();
     }
   };
 
   return (
     <div className="query-page-container">
-      {/* Optional Header */}
-      {/* <div className="query-page-header">Query</div> */}
-
-      {/* Chat Area */}
       <div className="chat-area" ref={chatAreaRef}>
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
-        {/* Show initial placeholder if no messages and screenshot exists? */}
+        {/* Initial Prompts */}
         {messages.length === 0 && screenshotAssetUrl && (
           <div className="initial-prompt">
             <p>Screenshot loaded. Ask me anything about it!</p>
@@ -213,36 +227,37 @@ const QueryPage: React.FC = () => {
         {messages.length === 0 && !screenshotAssetUrl && (
           <div className="initial-prompt">
             <p>
-              No screenshot loaded. Press CmdOrCtrl+Shift+Q to capture one, or
-              just ask a general question.
+              {" "}
+              Press CmdOrCtrl+Shift+Q to capture a screenshot, or ask a general
+              question.
             </p>
           </div>
         )}
+        {/* Render Messages */}
+        {messages.map((msg) => (
+          <MessageBubble key={msg.id} message={msg} />
+        ))}
       </div>
 
-      {/* Input Area */}
       <div className="input-area">
         {/* Screenshot Thumbnail */}
         {screenshotAssetUrl && (
           <div className="thumbnail-container">
             <Image
-              src={screenshotAssetUrl}
+              src={screenshotAssetUrl} // Use asset URL for display
               alt="Screenshot Thumbnail"
               className="screenshot-thumbnail"
               preview={{
                 visible: isPreviewVisible,
                 onVisibleChange: setIsPreviewVisible,
-                src: screenshotAssetUrl, // Ensure preview uses the correct source
+                src: screenshotAssetUrl, // Preview uses asset URL
               }}
-              onClick={() => setIsPreviewVisible(true)} // Click thumb to open preview
-              // The AntD Image component with preview doesn't need the separate preview logic,
-              // but we keep the 'display: none' structure from the docs just in case.
-              // Style the basic image element if needed, preview handles the rest.
-              rootClassName="thumbnail-antd-image" // Use rootClassName for wrapper styles if needed
+              onClick={() => setIsPreviewVisible(true)}
+              rootClassName="thumbnail-antd-image"
             />
-            {/* This hidden image is the standard way AntD handles preview triggering */}
+            {/* AntD's hidden image for preview functionality */}
             <Image
-              width={0} // Effectively hidden
+              width={0}
               height={0}
               src={screenshotAssetUrl}
               preview={{
@@ -254,22 +269,28 @@ const QueryPage: React.FC = () => {
             />
           </div>
         )}
-
+        {/* Text Input */}
         <Input.TextArea
           value={inputValue}
           onChange={handleInputChange}
-          onKeyDown={handleKeyDown} // Use onKeyDown for Enter press
-          placeholder="Ask about the screenshot or anything else..."
+          onKeyDown={handleKeyDown}
+          placeholder={
+            rawScreenshotPath
+              ? "Ask about the screenshot..."
+              : "Ask anything..."
+          }
           autoSize={{ minRows: 1, maxRows: 4 }}
           className="chat-input"
           disabled={isLoadingAI}
         />
+        {/* Send Button */}
         <Button
           type="primary"
           icon={<SendOutlined />}
           onClick={handleSendMessage}
           loading={isLoadingAI}
-          disabled={!inputValue.trim()}
+          // Disable button if AI is loading OR if there's no text AND no image
+          disabled={isLoadingAI || (!inputValue.trim() && !rawScreenshotPath)}
           className="send-button"
         />
       </div>

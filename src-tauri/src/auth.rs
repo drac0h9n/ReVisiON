@@ -187,11 +187,11 @@ fn get_github_client_secret() -> &'static str {
     &CONFIG.github_client_secret
 }
 
-fn get_worker_api_url() -> &'static str {
+pub fn get_worker_api_url() -> &'static str {
     &CONFIG.worker_api_url
 }
 
-fn get_worker_api_key() -> &'static str {
+pub fn get_worker_api_key() -> &'static str {
     &CONFIG.worker_api_key
 }
 
@@ -809,7 +809,8 @@ async fn sync_user_profile_to_backend(profile: &GithubUserProfile) -> Result<(),
     let payload = BackendSyncPayload { profile };
 
     // Use accessors to get compile-time embedded values for backend API
-    let worker_api_url = get_worker_api_url();
+    let temp = get_worker_api_url();
+    let worker_api_url = format!("{}/sync-user", temp);
     let worker_api_key = get_worker_api_key();
 
     println!("Auth: Syncing to backend URL: {}", worker_api_url);
