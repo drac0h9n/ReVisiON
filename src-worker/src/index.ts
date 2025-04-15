@@ -6,17 +6,17 @@ import {
   WorkerQueryResponse,
   OpenAIVisionPayload, // Reusable type for compatible APIs
   OpenAICompletionResponse,
-  ApiResponse,
+  ApiResponse, // Make sure ApiResponse is defined if used elsewhere, otherwise remove if unused
   OpenAIMessageContent, // Ensure this type is correctly defined and imported
-} from "./types";
-import { jsonResponse, errorResponse } from "./utils";
-import { authenticateRequest } from "./auth";
-import { upsertUserProfile } from "./db"; // Assuming db.ts defines this correctly
+} from "./types"; // Ensure types.ts defines all these interfaces correctly
+import { jsonResponse, errorResponse } from "./utils"; // Ensure utils.ts defines these helper functions
+import { authenticateRequest } from "./auth"; // Ensure auth.ts defines this function
+import { upsertUserProfile } from "./db"; // Ensure db.ts defines this correctly
 
 // --- Define Model Identifiers ---
 // !!! IMPORTANT: It's highly recommended to move these to Cloudflare Worker Environment Variables (Secrets) !!!
-const VISION_MODEL_ID_DEFAULT = "google/gemini-2.0-flash-001"; // Model for image description
-const TARGET_MODEL_ID_DEFAULT = "accounts/fireworks/models/deepseek-r1"; // Example default non-vision or target model ID
+const VISION_MODEL_ID_DEFAULT = "google/gemini-2.0-flash-001"; // Example: Changed to a common Gemini vision model
+const TARGET_MODEL_ID_DEFAULT = "accounts/fireworks/models/deepseek-r1"; // Example: Changed to a Cloudflare Workers AI model
 
 export default {
   async fetch(
@@ -26,10 +26,15 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
 
-    // Determine Model IDs from environment or use defaults
-    // Example: Allow overriding via environment variables
+    // Determine Model IDs - Prefer environment variables if set
     const visionModelId = VISION_MODEL_ID_DEFAULT;
     const targetModelId = TARGET_MODEL_ID_DEFAULT;
+
+    // --- Determine AI API Endpoint and Key ---
+    // Use Cloudflare AI Gateway specific variables if available, otherwise fallback to generic
+    // Note: Cloudflare AI Gateway often uses CF specific model IDs like "@cf/..."
+    const aiApiUrl = env.CUSTOM_AI_API_URL; // Use CF AI Gateway URL or a generic one
+    const aiApiKey = env.CUSTOM_AI_API_KEY; // Use CF AI Gateway key or a generic one
 
     try {
       // --- Authentication (Common to relevant endpoints) ---
@@ -52,7 +57,6 @@ export default {
         try {
           payload = await request.json<BackendSyncPayload>();
         } catch (e: any) {
-          // Catch specifically JSON parsing errors
           if (e instanceof SyntaxError) {
             console.error("Failed to parse JSON for /sync-user:", e.message);
             return errorResponse(
@@ -60,7 +64,6 @@ export default {
               400
             );
           }
-          // Handle other potential errors during parsing/reading body if any
           console.error("Error reading request body for /sync-user:", e);
           return errorResponse(
             `Bad Request: Could not read request body - ${e.message}`,
@@ -68,7 +71,6 @@ export default {
           );
         }
 
-        // Validate payload structure after successful parsing
         if (!payload?.profile?.id || !payload?.profile?.login) {
           console.warn(
             "Received sync payload missing required fields (id, login)",
@@ -84,9 +86,6 @@ export default {
         try {
           await upsertUserProfile(payload.profile, env.DB);
           console.log(`Sync completed for user ID: ${payload.profile.id}`);
-          // Use jsonResponse for standard success response structure if preferred
-          // return jsonResponse({ message: "User profile synced successfully." }, 200);
-          // Or a simple direct Response:
           return new Response(
             JSON.stringify({
               success: true,
@@ -132,11 +131,9 @@ export default {
           );
         }
 
-        // Destructure and validate core components
         const { text, base64ImageDataUrl } = queryRequest;
-        const userQuery = text || ""; // Ensure text is always a string, even if empty
+        const userQuery = text || "";
 
-        // Basic validation: At least text or image must be present
         if (!userQuery && !base64ImageDataUrl) {
           return errorResponse("Bad Request: Requires text or image data", 400);
         }
@@ -145,15 +142,11 @@ export default {
             userQuery ? userQuery.substring(0, 50) + "..." : "None"
           }', Image=${base64ImageDataUrl ? "Present" : "None"}`
         );
-        // TODO: Add logic here if needed to check if the *selected* target model actually *requires* this two-step process.
-        // For now, we assume *any* image triggers the two-step process.
 
-        // --- AI API Configuration ---
-        const customApiUrl = env.CUSTOM_AI_API_URL;
-        const customApiKey = env.CUSTOM_AI_API_KEY;
-        if (!customApiUrl || !customApiKey) {
+        // --- AI API Configuration Check ---
+        if (!aiApiUrl || !aiApiKey) {
           console.error(
-            "CRITICAL: CUSTOM_AI_API_URL or CUSTOM_AI_API_KEY secret not set!"
+            "CRITICAL: AI_API_URL or AI_API_KEY (or fallback CUSTOM_AI_...) secret not set!"
           );
           return errorResponse(
             "Internal Server Error: AI provider configuration missing",
@@ -166,23 +159,19 @@ export default {
           // === Branch 1: Image Present - Two-Step Process ===
           console.log("Image detected. Starting two-step AI process...");
 
-          // Validate image data URL basic format
           if (!base64ImageDataUrl.startsWith("data:image/")) {
             console.warn(
-              "Received potentially invalid image data URL format. Attempting to proceed..."
+              "Received potentially invalid image data URL format. Ensure it's 'data:image/[type];base64,...'"
             );
-            // Optionally return error: return errorResponse("Bad Request: Invalid image data format", 400);
+            // Consider stricter validation if needed
           }
 
           // --- Step A: Get Image Description from Vision Model (e.g., Gemini) ---
-          let imageDescriptionJsonString: string; // Store the description as a JSON string
+          let imageDescriptionJsonString: string; // Store the FINAL validated JSON string description
           try {
             console.log(
               `Step A: Calling Vision Model (${visionModelId}) for description...`
             );
-
-            // A1. Construct Vision Model Prompt (Requesting JSON Output)
-            // Note: Adjust 'macOS Sequoia 15.4' if OS info can be passed from client
 
             const geminiSystemPrompt = `**任务:** 你是一个图像分析助手。你的任务是详细描述下面提供的屏幕截图，以便另一个 AI 模型（无法看到图像）能够理解截图中的视觉内容和上下文。严格按照要求的 JSON 格式输出。
 
@@ -190,7 +179,7 @@ export default {
             - 操作系统: ['macOS Sequoia 15.4'] // Consider making this dynamic if possible
             - 背景: 这张截图由用户提供，展示了他们在运行一个桌面应用程序时遇到的界面或问题。
             - 用户遇到的原始问题是: "${userQuery}"
-            
+
             **指示:**
             1.  **分析整个截图，但请【重点关注】与用户问题"${userQuery}"最相关的窗口、区域和 UI 元素。**
             2.  **输出结构化的 JSON 对象:** 创建一个 JSON 对象，包含以下键 (确保值为有效的 JSON 类型，主要是字符串, 数组, 对象, 布尔值, null):
@@ -210,84 +199,118 @@ export default {
               { type: "text", text: geminiSystemPrompt },
               {
                 type: "image_url",
-                image_url: {
-                  url: base64ImageDataUrl,
-                  // detail: "auto" // Adjust if needed
-                },
+                image_url: { url: base64ImageDataUrl },
               },
             ];
 
+            // Ensure the payload format matches the expected format for the Vision Model API / Gateway
+            // This structure assumes an OpenAI-compatible API
             const visionPayload: OpenAIVisionPayload = {
               model: visionModelId,
               messages: [{ role: "user", content: visionContent }],
-              // --- IMPORTANT: Check if your specific API endpoint supports enforcing JSON ---
-              // Example for OpenAI-like APIs:
-              // response_format: { type: "json_object" },
-              // --- Adjust parameters as needed ---
-              max_tokens: 2048, // Sufficient for detailed JSON description
-              temperature: 0.2, // Low temp for factual, structured output
+              // response_format: { type: "json_object" }, // Uncomment IF your API/model supports JSON mode
+              max_tokens: 2048,
+              temperature: 0.2,
             };
 
             console.log(
               "Sending payload to Vision Model:",
               JSON.stringify(visionPayload).substring(0, 200) + "..."
-            ); // Log partial payload
+            );
 
             // A3. Call Vision Model API
-            const apiResponse = await fetch(customApiUrl, {
+            const visionApiResponse = await fetch(aiApiUrl, {
+              // Use the unified aiApiUrl
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${customApiKey}`,
+                Authorization: `Bearer ${aiApiKey}`, // Use the unified aiApiKey
               },
               body: JSON.stringify(visionPayload),
             });
 
             console.log(
-              `Vision Model API responded with status: ${apiResponse.status}`
+              `Vision Model API responded with status: ${visionApiResponse.status}`
             );
 
             // A4. Process Vision Model Response
-            if (!apiResponse.ok) {
-              const errorBodyText = await apiResponse.text(); // Read error body
+            if (!visionApiResponse.ok) {
+              const errorBodyText = await visionApiResponse.text();
               console.error(
-                `Vision Model API Error (${apiResponse.status}): ${errorBodyText}`
+                `Vision Model API Error (${visionApiResponse.status}): ${errorBodyText}`
               );
-              // Try to pass back a more specific error if possible
               return errorResponse(
-                `AI Vision Step Failed (${apiResponse.status}): ${
+                `AI Vision Step Failed (${visionApiResponse.status}): ${
                   errorBodyText || "Request failed"
                 }`,
-                apiResponse.status >= 500 ? 502 : apiResponse.status
+                visionApiResponse.status >= 500 ? 502 : visionApiResponse.status
               );
             }
 
-            const completion =
-              await apiResponse.json<OpenAICompletionResponse>();
+            // --- START: Added Logging and Robust Parsing ---
+            const rawResponseBody = await visionApiResponse.text(); // Read body ONCE
 
-            // Check for logical errors within the successful response
-            if (completion.error) {
+            console.log("------ RAW VISION MODEL RESPONSE START ------");
+            console.log(rawResponseBody); // LOG THE RAW RESPONSE
+            console.log("------ RAW VISION MODEL RESPONSE END ------");
+
+            let completion: OpenAICompletionResponse;
+            let descriptionContent: string | null = null;
+
+            try {
+              // Parse the raw text into a JSON object
+              completion = JSON.parse(rawResponseBody);
+
+              // Check for logical errors *within* the successfully parsed response
+              if (completion.error) {
+                console.error(
+                  `Vision Model API returned error in body: Type=${completion.error.type}, Msg=${completion.error.message}`
+                );
+                // Return a 4xx or 5xx depending on the error type if possible
+                return errorResponse(
+                  `AI Vision Step Error: ${completion.error.message}`,
+                  400
+                );
+              }
+
+              // Extract the main content string (adjust path if needed based on actual API response structure)
+              descriptionContent =
+                completion?.choices?.[0]?.message?.content ?? null;
+            } catch (parseError: any) {
               console.error(
-                `Vision Model API returned error in body: Type=${completion.error.type}, Msg=${completion.error.message}`
+                "Failed to parse Vision Model JSON response:",
+                parseError.message
+              );
+              // Log the raw response again for debugging parsing failures
+              console.error(
+                "Raw response body that failed parsing:",
+                rawResponseBody
               );
               return errorResponse(
-                `AI Vision Step Error: ${completion.error.message}`,
-                400
-              ); // Assuming 400 for API-level error report
-            }
-
-            const description =
-              completion?.choices?.[0]?.message?.content ?? null;
-            if (description === null || description.trim() === "") {
-              console.warn(
-                "Vision Model response successful, but content was null or empty."
+                "AI Vision Step Failed: Invalid JSON response received from model",
+                502 // Bad Gateway, as the upstream response was malformed
               );
-              return errorResponse("AI description content was empty", 500); // Indicate internal issue
+            }
+            // --- END: Added Logging and Robust Parsing ---
+
+            // Check if the extracted content is usable
+            if (
+              descriptionContent === null ||
+              descriptionContent.trim() === ""
+            ) {
+              console.warn(
+                "Vision Model response parsed successfully, but 'content' was null or empty."
+              );
+              // Log the full parsed object for context if content is empty
+              console.log(
+                "Parsed completion object with empty content:",
+                JSON.stringify(completion, null, 2)
+              );
+              return errorResponse("AI description content was empty", 500);
             }
 
-            // --- Validate if the output is likely JSON ---
-            let trimmedDescription = description.trim();
-            // Handle potential markdown code blocks ```json ... ```
+            // Clean potential markdown wrappers from the content string
+            let trimmedDescription = descriptionContent.trim();
             if (trimmedDescription.startsWith("```json")) {
               trimmedDescription = trimmedDescription.substring(7);
               if (trimmedDescription.endsWith("```")) {
@@ -296,47 +319,54 @@ export default {
                   trimmedDescription.length - 3
                 );
               }
-              trimmedDescription = trimmedDescription.trim(); // Trim again after removing backticks
+              trimmedDescription = trimmedDescription.trim(); // Trim again
             }
 
+            // --- Validate if the *cleaned content string* is valid JSON ---
+            // This assumes the model was instructed to put a JSON *string* inside the 'content' field.
             try {
-              JSON.parse(trimmedDescription); // Attempt to parse to validate
-              imageDescriptionJsonString = trimmedDescription; // Store the validated/cleaned JSON string
+              JSON.parse(trimmedDescription); // Attempt to parse the string itself
+              imageDescriptionJsonString = trimmedDescription; // Store the validated JSON string
               console.log(
-                `Step A successful. Received and validated JSON description (length: ${imageDescriptionJsonString.length})`
+                `Step A successful. Received and validated JSON description string (length: ${imageDescriptionJsonString.length})`
               );
+              // Optionally log the validated JSON string passed to the next step:
+              // console.log("Validated Image Description JSON:", imageDescriptionJsonString);
             } catch (jsonError: any) {
               console.error(
-                "Vision model output failed JSON parsing:",
+                "Vision model's extracted 'content' failed JSON parsing:",
                 jsonError.message
               );
-              console.error("Received content:", description); // Log the raw faulty content
-              // Decide: Return error or try to use the raw string anyway? Returning error is safer.
+              console.error(
+                "Extracted 'content' string that failed parsing:",
+                descriptionContent
+              ); // Log the original problematic string
               return errorResponse(
-                "AI description step failed: Output was not valid JSON",
-                500
+                "AI description step failed: Extracted content was not valid JSON",
+                500 // Internal error as the format deviated from expectation
               );
             }
           } catch (error: any) {
+            // Catch errors during the fetch/network part of Step A
             console.error(
-              `Error during Step A (Vision Model Call): ${error.message}`,
+              `Error during Step A (Vision Model Call/Processing): ${error.message}`,
               error.stack
             );
             if (error.name === "AbortError")
-              return errorResponse("Request to Vision AI timed out", 504); // Gateway Timeout
+              // Example for fetch timeout
+              return errorResponse("Request to Vision AI timed out", 504);
             return errorResponse(
               `Failed during image analysis step: ${error.message}`,
-              502
-            ); // Bad Gateway for network/fetch issues
+              502 // Bad Gateway or similar for upstream issues
+            );
           }
 
-          // --- Step B: Get Final Answer from Target Model (e.g., DeepSeek) ---
+          // --- Step B: Get Final Answer from Target Model (e.g., Llama) ---
           try {
             console.log(
               `Step B: Calling Target Model (${targetModelId}) with description...`
             );
 
-            // B1. Construct Target Model Prompt using the description from Step A
             const deepseekPrompt = `用户在使用 'macOS Sequoia 15.4' 时遇到了问题。
 用户的问题是： "${userQuery}"
 
@@ -348,17 +378,13 @@ ${imageDescriptionJsonString}
 请根据用户的问题和上述截图的 JSON 描述，分析问题可能的原因，并提供详细的、可操作的解决方案或步骤建议。请直接回答用户的原始问题，结合提供的视觉上下文进行推理。`;
 
             // B2. Prepare Target Model API Payload (Text-based)
+            // Adjust payload structure based on the TARGET model's requirements
             const targetPayload = {
-              model: targetModelId,
-              messages: [
-                {
-                  role: "user",
-                  content: deepseekPrompt,
-                },
-              ],
-              max_tokens: 3000, // Adjust as needed for the final answer length
-              temperature: 0.6, // Adjust for desired creativity/factuality balance
-              // Add other parameters like stop sequences if necessary
+              model: targetModelId, // Use the target model ID
+              messages: [{ role: "user", content: deepseekPrompt }],
+              max_tokens: 3000,
+              temperature: 0.6,
+              // stream: false, // Ensure stream is false if not handling streaming response
             };
 
             console.log(
@@ -367,50 +393,58 @@ ${imageDescriptionJsonString}
             );
 
             // B3. Call Target Model API
-            const apiResponse = await fetch(customApiUrl, {
+            const targetApiResponse = await fetch(aiApiUrl, {
+              // Use the same API endpoint/gateway
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${customApiKey}`,
+                Authorization: `Bearer ${aiApiKey}`,
               },
               body: JSON.stringify(targetPayload),
             });
 
             console.log(
-              `Target Model API responded with status: ${apiResponse.status}`
+              `Target Model API responded with status: ${targetApiResponse.status}`
             );
 
             // B4. Process Target Model Response
-            if (!apiResponse.ok) {
-              const errorBodyText = await apiResponse.text();
+            if (!targetApiResponse.ok) {
+              const errorBodyText = await targetApiResponse.text();
               console.error(
-                `Target Model API Error (${apiResponse.status}): ${errorBodyText}`
+                `Target Model API Error (${targetApiResponse.status}): ${errorBodyText}`
               );
               return errorResponse(
-                `AI Target Step Failed (${apiResponse.status}): ${
+                `AI Target Step Failed (${targetApiResponse.status}): ${
                   errorBodyText || "Request failed"
                 }`,
-                apiResponse.status >= 500 ? 502 : apiResponse.status
+                targetApiResponse.status >= 500 ? 502 : targetApiResponse.status
               );
             }
 
-            const completion =
-              await apiResponse.json<OpenAICompletionResponse>();
-            if (completion.error) {
+            // Assuming target model also returns OpenAI-compatible response
+            const targetCompletion =
+              await targetApiResponse.json<OpenAICompletionResponse>();
+
+            if (targetCompletion.error) {
               console.error(
-                `Target Model API returned error in body: Type=${completion.error.type}, Msg=${completion.error.message}`
+                `Target Model API returned error in body: Type=${targetCompletion.error.type}, Msg=${targetCompletion.error.message}`
               );
               return errorResponse(
-                `AI Target Step Error: ${completion.error.message}`,
+                `AI Target Step Error: ${targetCompletion.error.message}`,
                 400
               );
             }
 
             const finalAnswer =
-              completion?.choices?.[0]?.message?.content ?? null;
+              targetCompletion?.choices?.[0]?.message?.content ?? null;
+
             if (finalAnswer === null || finalAnswer.trim() === "") {
               console.warn(
                 "Target Model response successful, but content was null or empty."
+              );
+              console.log(
+                "Parsed target completion object with empty content:",
+                JSON.stringify(targetCompletion, null, 2)
               );
               return errorResponse("AI final answer content was empty", 500);
             }
@@ -423,7 +457,6 @@ ${imageDescriptionJsonString}
             const workerResponse: WorkerQueryResponse = {
               ai_text: finalAnswer,
             };
-            // Directly return the response object in the expected format
             return new Response(JSON.stringify(workerResponse), {
               status: 200,
               headers: { "Content-Type": "application/json" },
@@ -442,11 +475,9 @@ ${imageDescriptionJsonString}
           }
         } else {
           // === Branch 2: Text-Only Query ===
-          // This branch executes if `base64ImageDataUrl` is null or empty
           console.log("No image detected. Performing direct AI query...");
 
           if (!userQuery) {
-            // This case should technically be caught earlier, but double-check
             return errorResponse(
               "Bad Request: Text query cannot be empty",
               400
@@ -456,15 +487,11 @@ ${imageDescriptionJsonString}
           try {
             // Prepare payload for the target model directly
             const directPayload = {
-              model: targetModelId, // Use the same target model ID
-              messages: [
-                {
-                  role: "user",
-                  content: userQuery, // Only the user's text query
-                },
-              ],
-              max_tokens: 3000, // Adjust as needed
-              temperature: 0.7, // Adjust as needed
+              model: targetModelId, // Use the target model ID
+              messages: [{ role: "user", content: userQuery }],
+              max_tokens: 3000,
+              temperature: 0.7,
+              //stream: false,
             };
 
             console.log(
@@ -473,48 +500,56 @@ ${imageDescriptionJsonString}
             );
 
             // Call the AI API
-            const apiResponse = await fetch(customApiUrl, {
+            const directApiResponse = await fetch(aiApiUrl, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${customApiKey}`,
+                Authorization: `Bearer ${aiApiKey}`,
               },
               body: JSON.stringify(directPayload),
             });
 
             console.log(
-              `Direct AI API responded with status: ${apiResponse.status}`
+              `Direct AI API responded with status: ${directApiResponse.status}`
             );
-            if (!apiResponse.ok) {
-              const errorBodyText = await apiResponse.text();
+
+            if (!directApiResponse.ok) {
+              const errorBodyText = await directApiResponse.text();
               console.error(
-                `Direct AI API Error (${apiResponse.status}): ${errorBodyText}`
+                `Direct AI API Error (${directApiResponse.status}): ${errorBodyText}`
               );
               return errorResponse(
-                `Direct AI Query Failed (${apiResponse.status}): ${
+                `Direct AI Query Failed (${directApiResponse.status}): ${
                   errorBodyText || "Request failed"
                 }`,
-                apiResponse.status >= 500 ? 502 : apiResponse.status
+                directApiResponse.status >= 500 ? 502 : directApiResponse.status
               );
             }
 
             // Parse the response
-            const completion =
-              await apiResponse.json<OpenAICompletionResponse>();
-            if (completion.error) {
+            const directCompletion =
+              await directApiResponse.json<OpenAICompletionResponse>();
+
+            if (directCompletion.error) {
               console.error(
-                `Direct AI API returned error in body: Type=${completion.error.type}, Msg=${completion.error.message}`
+                `Direct AI API returned error in body: Type=${directCompletion.error.type}, Msg=${directCompletion.error.message}`
               );
               return errorResponse(
-                `Direct AI Query Error: ${completion.error.message}`,
+                `Direct AI Query Error: ${directCompletion.error.message}`,
                 400
               );
             }
 
-            const aiText = completion?.choices?.[0]?.message?.content ?? null;
+            const aiText =
+              directCompletion?.choices?.[0]?.message?.content ?? null;
+
             if (aiText === null || aiText.trim() === "") {
               console.warn(
                 "Direct AI response successful, but content was null or empty."
+              );
+              console.log(
+                "Parsed direct completion object with empty content:",
+                JSON.stringify(directCompletion, null, 2)
               );
               return errorResponse("Direct AI response content was empty", 500);
             }
@@ -548,8 +583,7 @@ ${imageDescriptionJsonString}
       console.log(`Request unhandled: ${request.method} ${url.pathname}`);
       return errorResponse("Not Found", 404);
     } catch (e: any) {
-      // --- Catch-all for unexpected errors in routing/request handling ---
-      // This catches errors *outside* specific endpoint try-catch blocks
+      // --- Catch-all for unexpected errors IN THE WORKER ITSELF ---
       console.error(
         "Unhandled Top-Level Worker Exception:",
         e.message,
@@ -560,5 +594,5 @@ ${imageDescriptionJsonString}
   },
 };
 
-// Ensure that `types.ts`, `utils.ts`, `auth.ts`, and `db.ts` are present
-// and correctly define the necessary interfaces and functions.
+// Reminder: Ensure `types.ts`, `utils.ts`, `auth.ts`, and `db.ts` exist and are correct.
+// Also ensure Cloudflare environment variables/secrets (DB, AI_API_URL, AI_API_KEY, AUTH_SECRET etc.) are set.
