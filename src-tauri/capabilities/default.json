@@ -8,6 +8,8 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "os:default"
+    "os:default",
+    "screenshots:default",
+    "macos-permissions:default"
   ]
 }

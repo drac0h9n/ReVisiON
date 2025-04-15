@@ -12,6 +12,12 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    // 1. 设置 baseUrl 为 "." (项目根目录)
+    "baseUrl": ".",
+    // 2. 设置 paths 映射
+    "paths": {
+      "@/*": ["src/*"] // '@/*' 指向相对于 baseUrl ('./') 的 'src/*' 目录
+    },
     "jsx": "react-jsx",
 
     /* Linting */
