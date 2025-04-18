@@ -31,6 +31,21 @@ fn greet(name: &str) -> String {
 // --- Main App Setup ---
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+      // Load environment variables based on build profile
+      if cfg!(debug_assertions) {
+        println!("Main: Loading .env.development");
+        match dotenvy::from_filename(".env.development") {
+            Ok(_) => println!("Main: Successfully loaded .env.development"),
+            Err(e) => println!("Main: Could not load .env.development - {}. Relying on system env vars.", e),
+        }
+    } else {
+        println!("Main: Loading .env.production");
+         match dotenvy::from_filename(".env.production") {
+            Ok(_) => println!("Main: Successfully loaded .env.production"),
+            Err(e) => println!("Main: Could not load .env.production - {}. Relying on system env vars.", e),
+        }
+    }
+    // Optionally, load default .env as a fallback or for shared variables
     dotenv().ok();
 
     let pending_auth_state = PendingAuthState::default();

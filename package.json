@@ -8,6 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:dev": "dotenv -e .env -- tauri dev",
     "tauri:build": "dotenv -e .env -- tauri build",
     "tauri:build:debugconsole": "dotenv -e .env -- tauri build -- --features with-devtools"
   },
