@@ -1,11 +1,6 @@
 // src/tray.ts
 import { TrayIcon } from "@tauri-apps/api/tray";
-import {
-  Menu,
-  MenuItem,
-  Submenu,
-  PredefinedMenuItem,
-} from "@tauri-apps/api/menu";
+import { Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { hide } from "@tauri-apps/api/app"; // 隐藏整个应用（所有窗口）
 import { listen, Event as TauriEvent, UnlistenFn } from "@tauri-apps/api/event";
 import { Window } from "@tauri-apps/api/window"; // Import the Window class
