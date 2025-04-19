@@ -39,6 +39,7 @@ tauri-plugin-screenshots = "2.1.0"
 tauri-plugin-macos-permissions = "2.2.0"
 tauri-plugin-deep-link = "2"
 tauri-plugin-process = "2"
+tauri-plugin-fs = "2"
 [features]
 with-devtools = ["tauri/devtools"]
 

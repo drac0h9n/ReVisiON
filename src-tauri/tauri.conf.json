@@ -15,6 +15,19 @@
         "title": "revision",
         "width": 800,
         "height": 600
+      },
+      {
+        "label": "queryWindow",
+        "title": "有什么可以帮您？",
+        "url": "query.html",
+        "width": 450,
+        "height": 200,
+        "visible": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "resizable": false,
+        "skipTaskbar": true
       }
     ],
     "security": {
@@ -27,6 +40,7 @@
         "enable": true,
         "scope": {
           "allow": [
+            "$APPDATA/tauri-plugin-screenshots/**",
             "**/*"
           ],
           "requireLiteralLeadingDot": false

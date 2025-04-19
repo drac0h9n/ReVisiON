@@ -661,7 +661,7 @@ function ScreenshotPage() {
               alt="Screenshot Preview"
               placeholder={<Spin tip="Loading Preview..." size="large" />}
               style={{ border: "1px solid #ccc", maxWidth: "100%" }}
-              preview={false}
+              preview={true}
             />
           </div>
         )}
