@@ -1,3 +1,5 @@
+//src/screenshot/query.tsx:
+
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Image, message, Input, Button } from "antd";
 import { SendOutlined } from "@ant-design/icons";
@@ -6,7 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { v4 as uuidv4 } from "uuid";
 
 import { ChatMessage } from "@/types/chat";
-import MessageBubble from "@/components/MessageBubble/MessageBubble";
+import MessageBubble from "@/components/MessageBubble/MessageBubble"; // Ensure this path is correct
 
 import "./query.css";
 
@@ -235,7 +237,7 @@ const QueryPage: React.FC = () => {
         )}
         {/* Render Messages */}
         {messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble key={msg.id} message={msg} /> // Use the updated MessageBubble
         ))}
       </div>
 
