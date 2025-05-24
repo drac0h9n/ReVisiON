@@ -141,7 +141,7 @@
 .markdownContent p,
 .parsedContentContainer p,
 .markdownParagraph {
-  margin-bottom: 0.4em; /* <-- ADJUST space AFTER paragraphs */
+  margin-bottom: 0.1em; /* <-- ADJUST space AFTER paragraphs */
   line-height: inherit; /* Inherit base line-height */
 }
 
@@ -150,7 +150,7 @@
 .markdownContent ol,
 .parsedContentContainer ul,
 .parsedContentContainer ol {
-  margin-bottom: 0.5em; /* <-- ADJUST space AFTER list blocks */
+  margin-bottom: 0.2em; /* <-- ADJUST space AFTER list blocks */
   padding-left: 1.8em; /* Standard indentation */
 }
 /* Ensure lists nested inside lists have less margin */
@@ -168,7 +168,7 @@
 /* List Items (li): Control spacing BETWEEN list items */
 .markdownContent li,
 .parsedContentContainer li {
-  margin-bottom: 0.2em; /* <-- ADJUST space BETWEEN list items */
+  margin-bottom: 0.1em; /* <-- ADJUST space BETWEEN list items */
 }
 /* Ensure paragraphs inside list items have NO bottom margin */
 .markdownContent li > p,
